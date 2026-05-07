@@ -61,7 +61,7 @@ namespace GW2app
             _compactTitle = compactTitle;
 
             // Clear Blish's default "No Title" placeholder up front when in compact
-            // mode — otherwise it shows in the title bar (in DefaultFont32) until the
+            // mode; otherwise it shows in the title bar (in DefaultFont32) until the
             // shadowed setter is called, which only writes to our custom storage.
             if (_compactTitle)
             {
@@ -71,7 +71,7 @@ namespace GW2app
 
             this.CanCloseWithEscape = false;
 
-            // Single entry point for layout — see Recalculate().
+            // Single entry point for layout. See Recalculate().
             Recalculate();
         }
 
@@ -83,8 +83,8 @@ namespace GW2app
             Recalculate();
         }
 
-        // Resize both width and height. Used when the UI scale changes — avoids the
-        // dispose/reopen path that would re-trigger subscribe → server re-image.
+        // Resize both width and height. Used when the UI scale changes; avoids the
+        // dispose/reopen path that would re-trigger subscribe and a server re-image.
         public void SetWindowSize(int newWidth, int newHeight)
         {
             if (newWidth == _width && newHeight == _height) return;
@@ -134,10 +134,10 @@ namespace GW2app
         {
             base.OnResized(e);
 
-            // Sync HEIGHT only. Width is treated as "intended" — set by the constructor
+            // Sync HEIGHT only. Width is treated as "intended": set by the constructor
             // or SetWindowSize, never by Blish. Otherwise SavesSize would carry over a
             // stale width across UI-scale changes (e.g. user was at 75%, restored at
-            // 100% → window opens at the smaller width and clips entries on the right).
+            // 100%, window opens at the smaller width and clips entries on the right).
             _height = this.Size.Y;
 
             if (_recalculating) return;
@@ -147,7 +147,7 @@ namespace GW2app
             UserPreferredHeight = this.Size.Y;
 
             // Recalculate refreshes ratios/ContentRegion AND forces this.Size back to
-            // (_width, _height) via ConstructWindow — so a saved width that doesn't
+            // (_width, _height) via ConstructWindow, so a saved width that doesn't
             // match the current scale's width is silently corrected.
             Recalculate();
         }
@@ -186,7 +186,7 @@ namespace GW2app
         // Single entry point for refreshing the window's geometry. Anything that wants
         // the layout to update (constructor, SetWindowHeight/SetWindowSize, user resize
         // via OnResized, background mode change, async game-texture swap) calls this.
-        // Subscribers — typically the entry panel — should listen to LayoutRefreshed
+        // Subscribers (typically the entry panel) should listen to LayoutRefreshed
         // rather than Blish's Resized event, because Resized only fires when Size
         // actually changes (and ConstructWindow's `Size = ...` is often a no-op).
         public event EventHandler LayoutRefreshed;
@@ -325,7 +325,7 @@ namespace GW2app
 
         // Set the window's emblem to a tinted copy of `source`. Each pixel's RGB is
         // multiplied by `tint` (alpha preserved). When scale < 1.0 the result is
-        // bilinearly downsampled — Blish positions the emblem from its texture's
+        // bilinearly downsampled. Blish positions the emblem from its texture's
         // Width/Height, so a smaller texture renders smaller without further setup.
         // The window owns and disposes the resulting texture. Source images should be
         // white silhouettes with alpha for anti-aliasing.
@@ -408,7 +408,7 @@ namespace GW2app
         // ----- Title-bar reset overlay (recharge icon + countdown text) -----
         //
         // WindowBase2 doesn't expose a way to inject content next to its built-in
-        // Subtitle text, so we paint the overlay ourselves in PaintAfterChildren —
+        // Subtitle text, so we paint the overlay ourselves in PaintAfterChildren,
         // which runs after the framework draws title/subtitle, so we sit on top.
         // Position is derived from TitleBarBounds (protected) and the same constants
         // WindowBase2 uses internally to compute the subtitle anchor.
@@ -485,7 +485,11 @@ namespace GW2app
                     var subFont = GameService.Content.DefaultFont14;
                     int subWidth = (int)subFont.MeasureString(_customSubtitle).Width;
                     int subX = leftBarX + titleAnchorX + titleWidth + 12;
-                    int subY = leftBarY + 6;
+                    // Anchor to the title's Y so the subtitle sits on the same baseline
+                    // (small +offset because Font14 is shorter than Font18, leaving the
+                    // top edge slightly lower for visual baseline alignment).
+                    int titleY = leftBarY + (30 - 22) / 2 + 12;
+                    int subY = titleY + 6;
                     spriteBatch.DrawStringOnCtrl(
                         this, _customSubtitle, subFont,
                         new Rectangle(subX, subY, subWidth + 4, 20),

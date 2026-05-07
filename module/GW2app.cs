@@ -1,7 +1,6 @@
 ﻿﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
-using System.ComponentModel;
 using System.ComponentModel.Composition;
 using System.IO;
 using System.Linq;
@@ -49,33 +48,49 @@ namespace GW2app
 
         protected override void DefineSettings(SettingCollection settings)
         {
-            // Note: setting key changed from "backgroundMode" because a previous build had
-            // a wider enum and persisted out-of-range integer values that broke the dropdown.
-            _backgroundMode = settings.DefineSetting(
+            // Sub-collections render as labeled panels in Blish's auto-generated settings
+            // view. We use them to group related options visually.
+            var appearance = settings.AddSubCollection("appearance", true, () => "Appearance");
+            _backgroundMode = appearance.DefineSetting(
                 "windowStyle",
                 GW2appWindow.BackgroundMode.Dark,
                 () => "Window background",
                 () => "Changes the background of windows");
+            _showAccountName = appearance.DefineSetting(
+                "showAccountName",
+                true,
+                () => "Show GW2 account name in list header",
+                () => "Hides the account-name subtitle on the list windows when off.");
 
-            _uiSize = settings.DefineSetting(
-                "uiSize",
-                UiSize.Full,
+            // Integer percentage so the slider snaps to whole percent values. Setting key
+            // bumped from "uiScale" because the type changed (float -> int) and old
+            // persisted values would not deserialize.
+            var sizing = settings.AddSubCollection("sizing", true, () => "Sizing");
+            _uiScalePct = sizing.DefineSetting(
+                "uiScalePct",
+                100,
                 () => "List scale",
-                () => "Scales list window dimensions");
+                () => "Scales list window dimensions and entry images");
+            _uiScalePct.SetRange(75, 125);
 
             var internalSettings = settings.AddSubCollection("internal");
             _persistedOpenListsJson = internalSettings.DefineSetting("openLists", "[]");
         }
 
-        // 75% / 100% UI scale options. Description attributes are picked up by Blish's
-        // enum dropdown (via Humanizer) and round-trip cleanly.
-        public enum UiSize
+        // Custom view that wraps Blish's auto-generated SettingsView and appends a
+        // "Reset scale to 100%" button after the slider. The slider is defined last in
+        // DefineSettings so the button sits directly below it.
+        public override Blish_HUD.Graphics.UI.IView GetSettingsView()
         {
-            [Description("75%")]            Small,
-            [Description("100% (default)")] Full,
+            return new GW2appSettingsView(
+                _backgroundMode,
+                _showAccountName,
+                _uiScalePct,
+                onResetScale: () => { if (_uiScalePct != null) _uiScalePct.Value = 100; });
         }
 
-        private float UiScale => (_uiSize?.Value ?? UiSize.Full) == UiSize.Small ? 0.75f : 1.0f;
+        private float UiScale => (_uiScalePct?.Value ?? 100) / 100f;
+        private bool ShowAccountName => _showAccountName?.Value ?? true;
 
         protected override async Task LoadAsync()
         {
@@ -93,8 +108,10 @@ namespace GW2app
 
             if (_backgroundMode != null)
                 _backgroundMode.SettingChanged += OnBackgroundModeChanged;
-            if (_uiSize != null)
-                _uiSize.SettingChanged += OnUiSizeChanged;
+            if (_uiScalePct != null)
+                _uiScalePct.SettingChanged += OnUiScaleChanged;
+            if (_showAccountName != null)
+                _showAccountName.SettingChanged += OnShowAccountNameChanged;
 
             StartHttpServer();
 
@@ -110,10 +127,10 @@ namespace GW2app
 
         // Apply a new UI scale in-place: resize each open window, switch its title mode,
         // re-tint the emblem at the new scale, and re-render the panel children. We
-        // intentionally do NOT dispose+reopen — that would fire Disposed handlers which
+        // intentionally do NOT dispose+reopen; that would fire Disposed handlers which
         // momentarily empty the subscription set, causing the website to re-stream every
         // image (loading spinner + re-decode). In-place updates reuse cached textures.
-        private void OnUiSizeChanged(object sender, ValueChangedEventArgs<UiSize> e)
+        private void OnUiScaleChanged(object sender, ValueChangedEventArgs<int> e)
         {
             bool compact = UiScale < 1.0f;
             foreach (var kvp in _listWindows)
@@ -131,6 +148,17 @@ namespace GW2app
                     entry.Window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list), UiScale);
                 }
                 RefreshListWindow(kvp.Key);
+            }
+        }
+
+        // Subtitle is account-name driven; toggling the setting just refreshes subtitles.
+        private void OnShowAccountNameChanged(object sender, ValueChangedEventArgs<bool> e)
+        {
+            foreach (var kvp in _listWindows)
+            {
+                var list = _catalog?.Lists?.FirstOrDefault(l => l.Id == kvp.Key);
+                if (list == null) continue;
+                kvp.Value.Window.Subtitle = SubtitleFor(list);
             }
         }
 
@@ -323,7 +351,7 @@ namespace GW2app
 
                     // Image just arrived: if this entry was pending a user toggle, clear it.
                     // The cache update above + pending removal here happen before the refresh
-                    // at the end of Update — so the new image is rendered with the spinner
+                    // at the end of Update, so the new image is rendered with the spinner
                     // already gone in a single atomic update.
                     _pendingEntries.Remove(key);
                 }
@@ -339,7 +367,7 @@ namespace GW2app
         private static string EntryKey(string listId, int index) => listId + ":" + index.ToString();
 
         // Wipe all per-connection state. Called on disconnect (dropCatalog=true) and on
-        // supersede by a new client (dropCatalog=false — keeps windows alive until the
+        // supersede by a new client (dropCatalog=false: keeps windows alive until the
         // new client's first `state` lands). Resetting _lastSubscribedIds is what causes
         // ReconcileListWindows → UpdateSubscriptions to send a fresh `subscribe` to the
         // new client based on currently-open windows.
@@ -363,8 +391,10 @@ namespace GW2app
 
             if (_backgroundMode != null)
                 _backgroundMode.SettingChanged -= OnBackgroundModeChanged;
-            if (_uiSize != null)
-                _uiSize.SettingChanged -= OnUiSizeChanged;
+            if (_uiScalePct != null)
+                _uiScalePct.SettingChanged -= OnUiScaleChanged;
+            if (_showAccountName != null)
+                _showAccountName.SettingChanged -= OnShowAccountNameChanged;
 
             try { _httpCts?.Cancel(); } catch { }
             try { _httpListener?.Stop(); } catch { }
@@ -443,7 +473,7 @@ namespace GW2app
 
         private StateMessage _catalog;
         private readonly Dictionary<string, Texture2D> _entryImages = new Dictionary<string, Texture2D>();
-        // Chat-link strings per (listId, index) — opaque, copied to clipboard on entry-image click.
+        // Chat-link strings per (listId, index). Opaque, copied to clipboard on entry-image click.
         private readonly Dictionary<string, string> _entryChatLinks = new Dictionary<string, string>();
         private HashSet<string> _lastSubscribedIds = new HashSet<string>();
         private readonly HashSet<string> _loadingLists = new HashSet<string>();
@@ -459,7 +489,8 @@ namespace GW2app
         private bool _unloading;
         private SettingEntry<string> _persistedOpenListsJson;
         private SettingEntry<GW2appWindow.BackgroundMode> _backgroundMode;
-        private SettingEntry<UiSize> _uiSize;
+        private SettingEntry<int> _uiScalePct;
+        private SettingEntry<bool> _showAccountName;
 
         private readonly ConcurrentQueue<IncomingMessage> _incomingMessages = new ConcurrentQueue<IncomingMessage>();
     }

@@ -118,7 +118,7 @@ namespace GW2app
         // Loopback (127/8, ::1) and RFC1918 private ranges (10/8, 172.16/12, 192.168/16),
         // plus IPv6 unique-local (fc00::/7) and link-local (fe80::/10). Public IPs are not
         // accepted as a serving host even if a user happens to point a public DNS name at
-        // their LAN — the browser would refuse the private-network access anyway.
+        // their LAN; the browser would refuse the private-network access anyway.
         private static bool IsLoopbackOrPrivateIp(System.Net.IPAddress ip)
         {
             if (System.Net.IPAddress.IsLoopback(ip)) return true;
@@ -261,7 +261,7 @@ namespace GW2app
                         }
 
                         // If we've been superseded between ReceiveAsync and now, drop the
-                        // message and stop the loop — the new client owns the dispatcher.
+                        // message and stop the loop; the new client owns the dispatcher.
                         bool stillActive;
                         lock (_clientLock) { stillActive = _activeClient == ws; }
                         if (!stillActive) return;
@@ -308,14 +308,14 @@ namespace GW2app
             }
         }
 
-        // Politely retire a superseded client: send our close frame (with code 4000) and
-        // let the previous receive loop continue running so it can read the peer's close
+        // Retire a superseded client: send our close frame (with code 4000) and let
+        // the previous receive loop continue running so it can read the peer's close
         // reply and exit cleanly. Cancelling the receive loop now would force-close the
         // TCP socket before the close frame is flushed, and the browser would only see
         // 1006 (abnormal closure).
         //
-        // Safety net: if the peer never echoes the close frame within 10 s, cancel the
-        // receive loop and dispose the socket so we don't leak resources on a dead peer.
+        // If the peer never echoes the close frame within 10 s, cancel the receive
+        // loop and dispose the socket so we don't leak resources on a dead peer.
         private async Task SupersedePreviousAsync(WebSocket previous, CancellationTokenSource previousCts)
         {
             try
