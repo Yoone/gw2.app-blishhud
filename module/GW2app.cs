@@ -61,6 +61,7 @@ namespace GW2app
         protected override async Task LoadAsync()
         {
             _iconTexture = ContentsManager.GetTexture("gw2app-icon.png");
+            _rechargeTexture = ContentsManager.GetTexture("recharge.png");
             _cornerSourceTexture = ContentsManager.GetTexture("gw2app-corner.png");
             _logoTexture = ContentsManager.GetTexture("gw2app-logo.png");
             _dotConnectedTexture = ContentsManager.GetTexture("connected.png");
@@ -139,6 +140,15 @@ namespace GW2app
 
             if (Interlocked.Exchange(ref _connectionStateDirty, 0) != 0)
                 catalogChanged = true;
+
+            // Refresh subtitles once per UTC minute so the reset countdown ticks down.
+            // Cheap when nothing changed (we only assign Subtitle if the string differs).
+            int currentMinuteEpoch = (int)(DateTime.UtcNow.Ticks / TimeSpan.TicksPerMinute);
+            if (_lastCountdownMinute != currentMinuteEpoch)
+            {
+                _lastCountdownMinute = currentMinuteEpoch;
+                RefreshOpenWindowCountdowns();
+            }
 
             if (catalogChanged)
             {
@@ -348,6 +358,7 @@ namespace GW2app
             _dotConnectedTexture?.Dispose();
             _dotNotConnectedTexture?.Dispose();
             _dividerTexture?.Dispose();
+            _rechargeTexture?.Dispose();
 
             GW2appInstance = null;
         }
@@ -362,6 +373,10 @@ namespace GW2app
         private Texture2D _dotConnectedTexture;
         private Texture2D _dotNotConnectedTexture;
         private Texture2D _dividerTexture;
+        private Texture2D _rechargeTexture;
+        // Last UTC-minute for which we refreshed window subtitles (drives reset
+        // countdown updates). Initialized so the first Update tick refreshes immediately.
+        private int _lastCountdownMinute = -1;
         private CornerIcon _cornerIcon;
         private ContextMenuStrip _contextMenuStrip;
 

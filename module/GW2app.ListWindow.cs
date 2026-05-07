@@ -247,13 +247,41 @@ namespace GW2app
                 return;
             }
 
+            // Group lists by account name. Each account gets a disabled header item
+            // followed by its lists, indented. Accounts and lists are each sorted
+            // alphabetically (case-insensitive). Lists with no account name are
+            // bucketed under "" and rendered first, without a header.
+            var byAccount = new SortedDictionary<string, List<ListDto>>(StringComparer.OrdinalIgnoreCase);
             foreach (var list in lists)
             {
                 if (list == null || string.IsNullOrEmpty(list.Id)) continue;
-                var listId = list.Id;
-                var name = list.Name ?? list.Id;
-                var item = _contextMenuStrip.AddMenuItem(name);
-                item.Click += (s, e) => OpenListWindow(listId);
+                string acct = null;
+                try { acct = list.Settings?["gw2AccountName"]?.Value<string>(); }
+                catch { /* malformed settings */ }
+                var key = acct ?? "";
+                if (!byAccount.TryGetValue(key, out var bucket))
+                {
+                    bucket = new List<ListDto>();
+                    byAccount[key] = bucket;
+                }
+                bucket.Add(list);
+            }
+
+            foreach (var kvp in byAccount)
+            {
+                if (!string.IsNullOrEmpty(kvp.Key))
+                {
+                    var header = _contextMenuStrip.AddMenuItem(kvp.Key);
+                    header.Enabled = false;
+                }
+                foreach (var list in kvp.Value.OrderBy(l => l.Name ?? l.Id, StringComparer.OrdinalIgnoreCase))
+                {
+                    var listId = list.Id;
+                    var name = list.Name ?? list.Id;
+                    var label = string.IsNullOrEmpty(kvp.Key) ? name : "  " + name;
+                    var item = _contextMenuStrip.AddMenuItem(label);
+                    item.Click += (s, e) => OpenListWindow(listId);
+                }
             }
         }
 
@@ -278,6 +306,7 @@ namespace GW2app
                 Id = $"{nameof(GW2app)}_List_{listId}",
             };
             window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list));
+            window.SetResetCountdownOverlay(_rechargeTexture, ResetCountdownFor(list));
 
             var panel = new Panel()
             {
@@ -320,6 +349,20 @@ namespace GW2app
 
             window.Show();
             RefreshListWindow(listId);
+        }
+
+        // Update the title-bar countdown overlay on every open list window. Called once
+        // per UTC minute so the displayed countdown ticks down without re-rendering the
+        // entire entries panel.
+        private void RefreshOpenWindowCountdowns()
+        {
+            if (_catalog?.Lists == null) return;
+            foreach (var kvp in _listWindows)
+            {
+                var list = _catalog.Lists.FirstOrDefault(l => l.Id == kvp.Key);
+                if (list == null) continue;
+                kvp.Value.Window.SetResetCountdownOverlay(_rechargeTexture, ResetCountdownFor(list));
+            }
         }
 
         // Reconcile list windows against the latest catalog. On disconnect, all windows
@@ -370,6 +413,8 @@ namespace GW2app
                             kvp.Value.Window.Subtitle = newSubtitle;
                         // Re-tint emblem in case settings.color changed.
                         kvp.Value.Window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list));
+                        // Refresh the title-bar countdown overlay in case settings.reset changed.
+                        kvp.Value.Window.SetResetCountdownOverlay(_rechargeTexture, ResetCountdownFor(list));
                     }
                 }
             }
@@ -625,8 +670,14 @@ namespace GW2app
         }
 
 
+        // Title and subtitle character budgets shrink when the title bar also shows the
+        // reset-countdown overlay (icon + "5h30" / "3d 5h"). Lists with reset=NEVER use
+        // the more generous limits since the right side of the title bar is empty.
         private const int TitleMaxChars = 12;
-        private const int SubtitleMaxChars = 15;
+        private const int TitleMaxCharsWithCountdown = TitleMaxChars - 2;
+        private const int SubtitleMaxCharsNoCountdown = 15;
+        // Used when the countdown overlay is shown (icon + "5h30" eats the right side).
+        private const int SubtitleMaxChars = 13;
 
         // Window sizing.
         private const int WindowWidth = 450;
@@ -652,7 +703,8 @@ namespace GW2app
 
         private static string TitleFor(ListDto list)
         {
-            return Truncate(list?.Name ?? list?.Id ?? "", TitleMaxChars);
+            int max = string.IsNullOrEmpty(ResetCountdownFor(list)) ? TitleMaxChars : TitleMaxCharsWithCountdown;
+            return Truncate(list?.Name ?? list?.Id ?? "", max);
         }
 
         // Maps list.settings.color (string like "pink", "blue", ...) to the same hex
@@ -682,7 +734,74 @@ namespace GW2app
             string acct = null;
             try { acct = list?.Settings?["gw2AccountName"]?.Value<string>(); }
             catch { /* malformed settings; fall through */ }
-            return TruncateAccountName(acct ?? "", SubtitleMaxChars);
+            int max = string.IsNullOrEmpty(ResetCountdownFor(list)) ? SubtitleMaxCharsNoCountdown : SubtitleMaxChars;
+            return TruncateAccountName(acct ?? "", max);
+        }
+
+        // Live countdown until the list's next reset, mirroring the website's
+        // ui/src/lib/components/timers/countdown.svelte:
+        //   - DAILY: reset at 00:00 UTC. Returns "Xh", "Xh YY", or "X mins" until the
+        //     next midnight UTC.
+        //   - WEEKLY: reset Monday 07:30 UTC. If <1 day away returns hours/minutes;
+        //     otherwise "X days" (ceiling).
+        //   - NEVER / unknown: returns null (no countdown shown).
+        private static string ResetCountdownFor(ListDto list)
+        {
+            string reset = null;
+            try { reset = list?.Settings?["reset"]?.Value<string>(); }
+            catch { /* malformed settings */ }
+            if (string.IsNullOrEmpty(reset)) return null;
+
+            var now = DateTime.UtcNow;
+            switch (reset.ToUpperInvariant())
+            {
+                case "DAILY":
+                {
+                    // Minutes until next midnight UTC. If we're exactly at midnight,
+                    // diff is 0 — same edge case as the web client (settles within a
+                    // minute). The +1440%1440 dance keeps the value non-negative.
+                    int nowMins = now.Hour * 60 + now.Minute;
+                    int diffMinutes = (1440 - nowMins) % 1440;
+                    return FormatCountdownDuration(diffMinutes);
+                }
+                case "WEEKLY":
+                {
+                    // Monday 07:30 UTC. Pin today at 07:30 UTC then advance to the next
+                    // Monday occurrence.
+                    var resetAt = new DateTime(now.Year, now.Month, now.Day, 7, 30, 0, DateTimeKind.Utc);
+                    int dow = (int)resetAt.DayOfWeek; // Sunday=0, Monday=1, ...
+                    if (dow != 1 || resetAt <= now)
+                    {
+                        int dayDiff = ((1 - dow + 7) % 7);
+                        if (dayDiff == 0) dayDiff = 7;
+                        resetAt = resetAt.AddDays(dayDiff);
+                    }
+                    var span = resetAt - now;
+                    if (span.TotalDays < 1.0)
+                    {
+                        int nowMins = now.Hour * 60 + now.Minute;
+                        int resetMins = resetAt.Hour * 60 + resetAt.Minute;
+                        int diffMinutes = ((resetMins - nowMins) + 1440) % 1440;
+                        return FormatCountdownDuration(diffMinutes);
+                    }
+                    int totalHours = (int)Math.Floor(span.TotalHours);
+                    int days  = totalHours / 24;
+                    int hours = totalHours % 24;
+                    return hours > 0 ? days + "d " + hours + "h" : days + "d";
+                }
+                default:
+                    return null; // NEVER or unknown
+            }
+        }
+
+        // Compact duration: "5h30" / "5h" / "45m". Days are rendered as "3d" by the caller.
+        private static string FormatCountdownDuration(int totalMinutes)
+        {
+            int hours = totalMinutes / 60;
+            int mins  = totalMinutes % 60;
+            if (hours > 0 && mins > 0) return hours + "h" + mins.ToString("D2");
+            if (hours > 0)             return hours + "h";
+            return mins + "m";
         }
 
         private static string Truncate(string s, int max)

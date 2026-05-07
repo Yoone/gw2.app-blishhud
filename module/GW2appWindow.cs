@@ -211,6 +211,56 @@ namespace GW2app
             }
         }
 
+        // ----- Title-bar reset overlay (recharge icon + countdown text) -----
+        //
+        // WindowBase2 doesn't expose a way to inject content next to its built-in
+        // Subtitle text, so we paint the overlay ourselves in PaintAfterChildren —
+        // which runs after the framework draws title/subtitle, so we sit on top.
+        // Position is derived from TitleBarBounds (protected) and the same constants
+        // WindowBase2 uses internally to compute the subtitle anchor.
+
+        private const int OverlayIconSize = 16;
+        private const int OverlayGapAfterIcon = 4;
+        // Right margin: distance from the window's right edge to the right edge of the
+        // overlay block. Sized to clear the X button (~32 px wide + ~16 px margin).
+        private const int OverlayRightMargin = 50;
+        // Y position of the icon within the title bar. Bumped well below 0 because
+        // the title bar texture extends both above and below y=0 and the visible bar
+        // sits low in that range.
+        private const int OverlayIconY = 13;
+
+        private Texture2D _rechargeIcon;
+        private string _countdownText;
+
+        public void SetResetCountdownOverlay(Texture2D icon, string countdown)
+        {
+            _rechargeIcon = icon;
+            _countdownText = countdown;
+        }
+
+        public override void PaintAfterChildren(SpriteBatch spriteBatch, Rectangle bounds)
+        {
+            base.PaintAfterChildren(spriteBatch, bounds);
+
+            if (_rechargeIcon == null || string.IsNullOrEmpty(_countdownText)) return;
+
+            var font = GameService.Content.DefaultFont16;
+            int textWidth = (int)font.MeasureString(_countdownText).Width;
+            int blockWidth = OverlayIconSize + OverlayGapAfterIcon + textWidth;
+
+            int rightEdgeX = this.Size.X - OverlayRightMargin;
+            int iconX = rightEdgeX - blockWidth;
+            int iconY = OverlayIconY;
+
+            spriteBatch.DrawOnCtrl(this, _rechargeIcon, new Rectangle(iconX, iconY, OverlayIconSize, OverlayIconSize));
+
+            int textX = iconX + OverlayIconSize + OverlayGapAfterIcon;
+            // Text rect taller than icon (font line height ~22). Top-align it with the
+            // icon top so the text and icon visually share a row.
+            int textY = iconY - 3;
+            spriteBatch.DrawStringOnCtrl(this, _countdownText, font, new Rectangle(textX, textY, textWidth + 2, 22), Color.White);
+        }
+
         protected override void DisposeControl()
         {
             DetachGameTextureSubscription();
