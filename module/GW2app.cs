@@ -347,6 +347,7 @@ namespace GW2app
             _logoTexture?.Dispose();
             _dotConnectedTexture?.Dispose();
             _dotNotConnectedTexture?.Dispose();
+            _dividerTexture?.Dispose();
 
             GW2appInstance = null;
         }
@@ -360,6 +361,7 @@ namespace GW2app
         private Texture2D _logoTexture;
         private Texture2D _dotConnectedTexture;
         private Texture2D _dotNotConnectedTexture;
+        private Texture2D _dividerTexture;
         private CornerIcon _cornerIcon;
         private ContextMenuStrip _contextMenuStrip;
 

@@ -430,10 +430,16 @@ namespace GW2app
             string sortMode = SortEntriesFor(list);
             bool groupCompleted = string.Equals(sortMode, "GROUP_COMPLETED", StringComparison.OrdinalIgnoreCase);
 
+            // Tracks whether any entry has been rendered in the current section. Drives
+            // divider drawing (we draw a 1px line BEFORE every rendered entry except the
+            // first one in a section). Reset between sections so the completed section
+            // doesn't get a leading divider from the uncompleted section.
+            bool sectionHasContent = false;
+
             if (!groupCompleted)
             {
                 for (int i = 0; i < total; i++)
-                    RenderEntry(entry, listId, list, i, ref y);
+                    RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent);
             }
             else
             {
@@ -442,7 +448,7 @@ namespace GW2app
                 {
                     var e = list.Entries[i];
                     if (e == null || e.Completed || e.AutoCompleted) continue;
-                    RenderEntry(entry, listId, list, i, ref y);
+                    RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent);
                 }
 
                 // Count completed entries to render the header (and section, if expanded).
@@ -477,11 +483,12 @@ namespace GW2app
 
                     if (!collapsed)
                     {
+                        sectionHasContent = false; // restart divider tracking for this section
                         for (int i = 0; i < total; i++)
                         {
                             var e = list.Entries[i];
                             if (e == null || !(e.Completed || e.AutoCompleted)) continue;
-                            RenderEntry(entry, listId, list, i, ref y);
+                            RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent);
                         }
                     }
                 }
@@ -494,11 +501,17 @@ namespace GW2app
         }
 
         // Renders one entry's checkbox + image (+ pending overlay) into the panel and
-        // advances `y`. Skips entries with no cached image.
-        private void RenderEntry(ListWindowEntry entry, string listId, ListDto list, int index, ref int y)
+        // advances `y`. Skips entries with no cached image. Draws a 1px divider above
+        // the entry when the section already has at least one rendered entry, and sets
+        // sectionHasContent to true.
+        private void RenderEntry(ListWindowEntry entry, string listId, ListDto list, int index, ref int y, ref bool sectionHasContent)
         {
             var key = EntryKey(listId, index);
             if (!_entryImages.TryGetValue(key, out var tex) || tex == null) return;
+
+            if (sectionHasContent)
+                DrawDivider(entry.Panel, ref y);
+            sectionHasContent = true;
 
             var size = ScaledSize(tex);
             var entryDto = list.Entries[index];
@@ -551,6 +564,36 @@ namespace GW2app
             }
 
             y += size.Y;
+        }
+
+        // 1px line in #151921, drawn between consecutive entries within a section.
+        // Spans from the panel's left edge (just before the checkbox) to the right edge
+        // of the entry image. No padding — sits flush against both images.
+        private const int DividerLeftX = 0;
+        private const int DividerRightX = CheckboxColumnWidth + DisplayWidth;
+        // White at 15% opacity, premultiplied (Blish's SpriteBatch expects premultiplied alpha).
+        private static readonly Color DividerColor = new Color(38, 38, 38, 38);
+
+        private void DrawDivider(Container parent, ref int y)
+        {
+            EnsureDividerTexture();
+            new Image(_dividerTexture)
+            {
+                Location = new Point(DividerLeftX, y),
+                Size = new Point(DividerRightX - DividerLeftX, 1),
+                Parent = parent,
+            };
+            y += 1;
+        }
+
+        private void EnsureDividerTexture()
+        {
+            if (_dividerTexture != null) return;
+            using (var gdc = GameService.Graphics.LendGraphicsDeviceContext())
+            {
+                _dividerTexture = new Texture2D(gdc.GraphicsDevice, 1, 1);
+                _dividerTexture.SetData(new[] { DividerColor });
+            }
         }
 
         private static string SortEntriesFor(ListDto list)
