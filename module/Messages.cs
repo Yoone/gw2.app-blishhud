@@ -16,7 +16,7 @@ namespace GW2app
     // Fields are assigned via Newtonsoft.Json reflection; suppress "never assigned" warnings.
 #pragma warning disable 0649
 
-    internal enum MessageKind { State, Entry, Synced, ConnectionLost }
+    internal enum MessageKind { State, Entry, Synced, ConnectionLost, ClientReplaced }
 
     internal class IncomingMessage
     {

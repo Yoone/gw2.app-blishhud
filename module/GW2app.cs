@@ -116,9 +116,17 @@ namespace GW2app
                             }
                             break;
                         case MessageKind.ConnectionLost:
-                            _loadingLists.Clear();
-                            _pendingEntries.Clear();
-                            _entryChatLinks.Clear();
+                            // Drop the catalog entirely on disconnect so ReconcileListWindows
+                            // closes all open list windows (their persisted IDs auto-reopen on
+                            // the next connection's first state).
+                            ResetClientState(dropCatalog: true);
+                            catalogChanged = true;
+                            break;
+                        case MessageKind.ClientReplaced:
+                            // Keep the catalog so list windows survive until the new client's
+                            // first `state` arrives; only flush per-entry caches and the
+                            // subscription set so the new client gets a fresh `subscribe`.
+                            ResetClientState(dropCatalog: false);
                             catalogChanged = true;
                             break;
                     }
@@ -272,6 +280,24 @@ namespace GW2app
         }
 
         private static string EntryKey(string listId, int index) => listId + ":" + index.ToString();
+
+        // Wipe all per-connection state. Called on disconnect (dropCatalog=true) and on
+        // supersede by a new client (dropCatalog=false — keeps windows alive until the
+        // new client's first `state` lands). Resetting _lastSubscribedIds is what causes
+        // ReconcileListWindows → UpdateSubscriptions to send a fresh `subscribe` to the
+        // new client based on currently-open windows.
+        private void ResetClientState(bool dropCatalog)
+        {
+            foreach (var tex in _entryImages.Values)
+                try { tex?.Dispose(); } catch { }
+            _entryImages.Clear();
+            _entryChatLinks.Clear();
+            _pendingEntries.Clear();
+            _loadingLists.Clear();
+            _lastSubscribedIds = new HashSet<string>();
+            _restoredFromPersistence = false;
+            if (dropCatalog) _catalog = null;
+        }
 
         protected override void Unload()
         {

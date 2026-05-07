@@ -171,9 +171,14 @@ namespace GW2app
             if (previous != null)
             {
                 Logger.Info($"Superseding previous WS client.");
-                _ = CloseWsAsync(previous, CloseCodeSuperseded, "superseded");
-                try { previousCts?.Cancel(); } catch { }
-                try { previousCts?.Dispose(); } catch { }
+                // Tell the dispatcher to flush per-entry state from the previous client
+                // before the new client's `state` is applied. This message is processed
+                // FIFO so it lands between the old client's last messages and the new
+                // client's first `state`. The old client's receive loop also checks
+                // _activeClient before each enqueue (below) to drop in-flight messages
+                // racing with this transition.
+                _incomingMessages.Enqueue(new IncomingMessage { Kind = MessageKind.ClientReplaced });
+                _ = SupersedePreviousAsync(previous, previousCts);
             }
 
             Interlocked.Exchange(ref _hasActiveConnection, 1);
@@ -255,6 +260,12 @@ namespace GW2app
                             }
                         }
 
+                        // If we've been superseded between ReceiveAsync and now, drop the
+                        // message and stop the loop — the new client owns the dispatcher.
+                        bool stillActive;
+                        lock (_clientLock) { stillActive = _activeClient == ws; }
+                        if (!stillActive) return;
+
                         _incomingMessages.Enqueue(parsed);
                     }
                 }
@@ -295,6 +306,37 @@ namespace GW2app
                 try { ws.Dispose(); } catch { }
                 Logger.Info($"WS from {remote} closed.");
             }
+        }
+
+        // Politely retire a superseded client: send our close frame (with code 4000) and
+        // let the previous receive loop continue running so it can read the peer's close
+        // reply and exit cleanly. Cancelling the receive loop now would force-close the
+        // TCP socket before the close frame is flushed, and the browser would only see
+        // 1006 (abnormal closure).
+        //
+        // Safety net: if the peer never echoes the close frame within 10 s, cancel the
+        // receive loop and dispose the socket so we don't leak resources on a dead peer.
+        private async Task SupersedePreviousAsync(WebSocket previous, CancellationTokenSource previousCts)
+        {
+            try
+            {
+                using (var sendCts = new CancellationTokenSource(TimeSpan.FromSeconds(2)))
+                {
+                    await previous.CloseOutputAsync(
+                        (WebSocketCloseStatus)CloseCodeSuperseded, "superseded", sendCts.Token);
+                }
+            }
+            catch (Exception e)
+            {
+                Logger.Info($"Sending close frame to superseded client failed: {e.Message}");
+            }
+
+            _ = Task.Delay(TimeSpan.FromSeconds(10)).ContinueWith(_ =>
+            {
+                try { previousCts?.Cancel(); } catch { }
+                try { previousCts?.Dispose(); } catch { }
+                try { previous.Dispose(); } catch { }
+            });
         }
 
         private static async Task CloseWsAsync(WebSocket ws, int code, string reason)

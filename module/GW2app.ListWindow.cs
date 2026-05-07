@@ -48,7 +48,7 @@ namespace GW2app
             if (_infoWindow == null)
                 BuildInfoWindow();
 
-            if (!_infoWindow.Visible) _infoWindow.Show();
+            _infoWindow.ToggleWindow();
         }
 
         private void BuildInfoWindow()
