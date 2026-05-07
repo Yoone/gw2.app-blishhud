@@ -1,0 +1,9 @@
+# Visual Studio
+bin
+obj
+.vs
+*.user
+*.suo
+
+# Mac
+.DS_Store

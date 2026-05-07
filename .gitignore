@@ -1,0 +1,18 @@
+# Syncthing
+.stfolder/
+
+# Visual Studio
+bin
+obj
+.vs
+*.user
+*.suo
+
+# Vim
+*.swp
+*.swo
+*.swn
+*.swm
+
+# Mac
+.DS_Store
