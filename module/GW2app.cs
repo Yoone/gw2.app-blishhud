@@ -1,6 +1,7 @@
 ﻿﻿using System;
 using System.Collections.Concurrent;
 using System.Collections.Generic;
+using System.ComponentModel;
 using System.ComponentModel.Composition;
 using System.IO;
 using System.Linq;
@@ -25,7 +26,9 @@ namespace GW2app
         private static readonly Logger Logger = Logger.GetLogger<GW2app>();
 
         private const int HttpPort = 38473;
-        private const int DisplayWidth = 400;
+        // Base (100%) entry-image width. Effective DisplayWidth scales with UiScale.
+        private const int BaseDisplayWidth = 400;
+        private int DisplayWidth => (int)Math.Round(BaseDisplayWidth * UiScale);
         private const int ProtocolVersion = 1;
         private const int HandshakeTimeoutMs = 5000;
 
@@ -51,12 +54,28 @@ namespace GW2app
             _backgroundMode = settings.DefineSetting(
                 "windowStyle",
                 GW2appWindow.BackgroundMode.Dark,
-                () => "List window style",
-                () => "Changes the background of list windows");
+                () => "Window background",
+                () => "Changes the background of windows");
+
+            _uiSize = settings.DefineSetting(
+                "uiSize",
+                UiSize.Full,
+                () => "List scale",
+                () => "Scales list window dimensions");
 
             var internalSettings = settings.AddSubCollection("internal");
             _persistedOpenListsJson = internalSettings.DefineSetting("openLists", "[]");
         }
+
+        // 75% / 100% UI scale options. Description attributes are picked up by Blish's
+        // enum dropdown (via Humanizer) and round-trip cleanly.
+        public enum UiSize
+        {
+            [Description("75%")]            Small,
+            [Description("100% (default)")] Full,
+        }
+
+        private float UiScale => (_uiSize?.Value ?? UiSize.Full) == UiSize.Small ? 0.75f : 1.0f;
 
         protected override async Task LoadAsync()
         {
@@ -74,6 +93,8 @@ namespace GW2app
 
             if (_backgroundMode != null)
                 _backgroundMode.SettingChanged += OnBackgroundModeChanged;
+            if (_uiSize != null)
+                _uiSize.SettingChanged += OnUiSizeChanged;
 
             StartHttpServer();
 
@@ -85,6 +106,32 @@ namespace GW2app
             foreach (var entry in _listWindows.Values)
                 entry.Window?.SetBackgroundMode(e.NewValue);
             _infoWindow?.SetBackgroundMode(e.NewValue);
+        }
+
+        // Apply a new UI scale in-place: resize each open window, switch its title mode,
+        // re-tint the emblem at the new scale, and re-render the panel children. We
+        // intentionally do NOT dispose+reopen — that would fire Disposed handlers which
+        // momentarily empty the subscription set, causing the website to re-stream every
+        // image (loading spinner + re-decode). In-place updates reuse cached textures.
+        private void OnUiSizeChanged(object sender, ValueChangedEventArgs<UiSize> e)
+        {
+            bool compact = UiScale < 1.0f;
+            foreach (var kvp in _listWindows)
+            {
+                var entry = kvp.Value;
+                var list = _catalog?.Lists?.FirstOrDefault(l => l.Id == kvp.Key);
+
+                entry.Window.SetCompactTitle(compact);
+                // SetWindowSize fires LayoutRefreshed which syncs the panel + scrollbar.
+                entry.Window.SetWindowSize(WindowWidth, WindowMaxHeight);
+                if (list != null)
+                {
+                    entry.Window.Title = TitleFor(list);
+                    entry.Window.Subtitle = SubtitleFor(list);
+                    entry.Window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list), UiScale);
+                }
+                RefreshListWindow(kvp.Key);
+            }
         }
 
         protected override void Update(GameTime gameTime)
@@ -316,6 +363,8 @@ namespace GW2app
 
             if (_backgroundMode != null)
                 _backgroundMode.SettingChanged -= OnBackgroundModeChanged;
+            if (_uiSize != null)
+                _uiSize.SettingChanged -= OnUiSizeChanged;
 
             try { _httpCts?.Cancel(); } catch { }
             try { _httpListener?.Stop(); } catch { }
@@ -410,6 +459,7 @@ namespace GW2app
         private bool _unloading;
         private SettingEntry<string> _persistedOpenListsJson;
         private SettingEntry<GW2appWindow.BackgroundMode> _backgroundMode;
+        private SettingEntry<UiSize> _uiSize;
 
         private readonly ConcurrentQueue<IncomingMessage> _incomingMessages = new ConcurrentQueue<IncomingMessage>();
     }

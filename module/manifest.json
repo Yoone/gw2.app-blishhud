@@ -5,7 +5,7 @@
   "package": "GW2app.dll",
   "manifest_version": 1,
 
-  "description": "Access your GW2.app lists in game to work on your daily tasks or long term goals. Open gw2.app/blish to get started!\n\nSupports achievement tracking, timers, story progress, equipped gear, and so much more.",
+  "description": "Access your custom GW2.app lists in game to work on your goals. Open gw2.app/blish to get started!\n\nSupports waypoint copying, achievement tracking, timers, story progress, equipped gear, Trading Post price/order/history watchers, and so much more.",
   "dependencies": {
     "bh.blishhud": ">=1.2.0"
   },

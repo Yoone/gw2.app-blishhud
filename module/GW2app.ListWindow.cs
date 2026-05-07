@@ -296,16 +296,22 @@ namespace GW2app
             var list = _catalog?.Lists?.FirstOrDefault(l => l.Id == listId);
             if (list == null) return;
 
-            var window = new GW2appWindow(WindowWidth, WindowMaxHeight, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.Dark)
+            bool compact = UiScale < 1.0f;
+            var window = new GW2appWindow(WindowWidth, WindowMaxHeight, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.Dark, compactTitle: compact)
             {
                 Parent = GameService.Graphics.SpriteScreen,
                 Title = TitleFor(list),
                 Subtitle = SubtitleFor(list),
                 Location = new Point(300, 300),
                 SavesPosition = true,
+                // Per-list height is user-resizable from the bottom-right corner. Width is
+                // locked by HandleWindowResize. SavesSize persists the height across
+                // sessions (Blish writes once on mouse release, not per-frame).
+                CanResize = true,
+                SavesSize = true,
                 Id = $"{nameof(GW2app)}_List_{listId}",
             };
-            window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list));
+            window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list), UiScale);
             window.SetResetCountdownOverlay(_rechargeTexture, ResetCountdownFor(list));
 
             var panel = new Panel()
@@ -318,6 +324,11 @@ namespace GW2app
             };
 
             var entry = new ListWindowEntry { Window = window, Panel = panel, ListId = listId };
+
+            // Single hook: GW2appWindow.LayoutRefreshed fires after every recalc
+            // (constructor, SetWindowHeight, SetWindowSize, user drag, bg-mode change,
+            // game-texture async swap), so we sync the panel/scrollbar from one place.
+            window.LayoutRefreshed += (s, e) => ResizePanelToWindow(entry);
 
             EventHandler<EventArgs> onHidden = (s, e) =>
             {
@@ -412,7 +423,7 @@ namespace GW2app
                         if (kvp.Value.Window.Subtitle != newSubtitle)
                             kvp.Value.Window.Subtitle = newSubtitle;
                         // Re-tint emblem in case settings.color changed.
-                        kvp.Value.Window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list));
+                        kvp.Value.Window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list), UiScale);
                         // Refresh the title-bar countdown overlay in case settings.reset changed.
                         kvp.Value.Window.SetResetCountdownOverlay(_rechargeTexture, ResetCountdownFor(list));
                     }
@@ -433,8 +444,11 @@ namespace GW2app
             // Show a centered spinner while we wait for the initial bulk transfer (synced).
             if (_loadingLists.Contains(listId))
             {
-                ResizeWindowAndPanel(entry, WindowBaseHeight);
-                const int spinnerSize = 64;
+                // Disable scrolling during loading so a stray scrollbar can't appear in
+                // compact mode where the panel is short.
+                entry.Panel.CanScroll = false;
+                ResizeWindowOrPanel(entry, WindowBaseHeight);
+                int spinnerSize = (int)Math.Round(64 * UiScale);
                 int sx = Math.Max(0, (entry.Panel.Width - spinnerSize) / 2);
                 int sy = Math.Max(0, (entry.Panel.Height - spinnerSize) / 2);
                 new LoadingSpinner()
@@ -454,7 +468,7 @@ namespace GW2app
             if (total == 0)
             {
                 entry.Panel.CanScroll = false;
-                ResizeWindowAndPanel(entry, WindowBaseHeight);
+                ResizeWindowOrPanel(entry, WindowBaseHeight);
                 new Label()
                 {
                     Text = "Empty list",
@@ -509,14 +523,24 @@ namespace GW2app
                     bool collapsed = _completedSectionCollapsed.Contains(listId);
                     var btnText = (collapsed ? "Show completed (" : "Hide completed (") + completedCount + ")";
                     y += 6;
+                    int btnWidth  = (int)Math.Round(200 * UiScale);
+                    int btnHeight = (int)Math.Round(30  * UiScale);
                     var btn = new StandardButton()
                     {
                         Text = btnText,
-                        Width = 200,
-                        Height = 30,
+                        Width = btnWidth,
+                        Height = btnHeight,
                         Location = new Point(CheckboxLeftMargin, y),
                         Parent = entry.Panel,
                     };
+                    // Smaller font in compact mode. StandardButton inherits LabelBase; the
+                    // _font field is protected with no public setter, so we poke it via
+                    // reflection. Cached FieldInfo at the bottom of the file.
+                    if (UiScale < 1.0f && _labelBaseFontField != null)
+                    {
+                        try { _labelBaseFontField.SetValue(btn, GameService.Content.DefaultFont12); }
+                        catch (Exception ex) { Logger.Warn($"Failed to override button font: {ex.Message}"); }
+                    }
                     var capturedListId = listId;
                     btn.Click += (s, e) =>
                     {
@@ -539,10 +563,30 @@ namespace GW2app
                 }
             }
 
-            // Resize the window to fit content (clamped between base and max).
+            // Auto-fit (default rendered height) caps at WindowMaxHeight — that's the
+            // UI-scale-aware default size. The user-drag cap is separate: min(content
+            // height, 1200), so users can grow the window past the default but never
+            // beyond the content or the absolute MaxResizeHeight.
             int contentHeight = y + ImagesBottomMargin;
-            int targetHeight = Math.Min(WindowMaxHeight, Math.Max(WindowBaseHeight, contentHeight + WindowVerticalChrome));
+            int contentBased = contentHeight + WindowVerticalChrome;
+            int fitHeight = Math.Min(WindowMaxHeight, Math.Max(WindowBaseHeight, contentBased));
+            int dragCap   = Math.Min(GW2appWindow.MaxResizeHeight, Math.Max(WindowBaseHeight, contentBased));
+            entry.Window.MaxAllowedHeight = dragCap;
+
+            int targetHeight = entry.Window.UserPreferredHeight.HasValue
+                ? Math.Min(entry.Window.UserPreferredHeight.Value, dragCap)
+                : fitHeight;
             ResizeWindowAndPanel(entry, targetHeight);
+        }
+
+        // For loading / empty states: same logic but use WindowBaseHeight as the floor.
+        private static void ResizeWindowOrPanel(ListWindowEntry entry, int fitHeight)
+        {
+            if (entry.Window == null) return;
+            int target = entry.Window.UserPreferredHeight.HasValue
+                ? Math.Min(entry.Window.UserPreferredHeight.Value, fitHeight)
+                : fitHeight;
+            ResizeWindowAndPanel(entry, target);
         }
 
         // Renders one entry's checkbox + image (+ pending overlay) into the panel and
@@ -615,7 +659,7 @@ namespace GW2app
         // Spans from the panel's left edge (just before the checkbox) to the right edge
         // of the entry image. No padding — sits flush against both images.
         private const int DividerLeftX = 0;
-        private const int DividerRightX = CheckboxColumnWidth + DisplayWidth;
+        private int DividerRightX => CheckboxColumnWidth + DisplayWidth;
         // White at 15% opacity, premultiplied (Blish's SpriteBatch expects premultiplied alpha).
         private static readonly Color DividerColor = new Color(38, 38, 38, 38);
 
@@ -655,13 +699,25 @@ namespace GW2app
         private static readonly FieldInfo _panelScrollbarField =
             typeof(Panel).GetField("_panelScrollbar", BindingFlags.NonPublic | BindingFlags.Instance);
 
-        // Resize the window AND keep the inner panel in sync. WindowBase2 doesn't
-        // automatically resize its children when its content region changes.
+        // StandardButton inherits LabelBase, whose _font is protected. We need to swap
+        // it for a smaller font in compact mode and there is no public Font property
+        // on StandardButton.
+        private static readonly FieldInfo _labelBaseFontField =
+            typeof(LabelBase).GetField("_font", BindingFlags.NonPublic | BindingFlags.Instance);
+
+        // Resize the window. The panel is synced automatically via the window's
+        // LayoutRefreshed event (subscribed once in OpenListWindow) — no need to call
+        // ResizePanelToWindow here.
         private static void ResizeWindowAndPanel(ListWindowEntry entry, int newHeight)
         {
             entry.Window.SetWindowHeight(newHeight);
-            if (entry.Panel == null) return;
+        }
 
+        // Sync the panel's size + scrollbar to the window's current content region.
+        // Wired to GW2appWindow.LayoutRefreshed.
+        private static void ResizePanelToWindow(ListWindowEntry entry)
+        {
+            if (entry.Panel == null) return;
             entry.Panel.Size = new Point(entry.Window.ContentRegion.Width, entry.Window.ContentRegion.Height);
             entry.Panel.RecalculateLayout();
 
@@ -680,7 +736,11 @@ namespace GW2app
         private const int SubtitleMaxChars = 13;
 
         // Window sizing.
-        private const int WindowWidth = 450;
+        // Width = fixed-chrome + scaled image. Fixed = checkbox column (CheckboxColumnWidth)
+        // + room on the right for the scrollbar. The image (DisplayWidth) is scaled by
+        // UiScale; the scrollbar / checkbox sizes stay constant.
+        private const int FixedRightChrome = 20; // scrollbar + right padding
+        private int WindowWidth => CheckboxColumnWidth + DisplayWidth + FixedRightChrome;
         private const int CheckboxSize = 22;
         private const int CheckboxLeftMargin = 8;  // space between panel edge and checkbox
         // Image stays at the same panel-x as before; reduce the visual gap between
@@ -690,9 +750,12 @@ namespace GW2app
         // Tint applied to entry images when an entry is pending a server confirmation
         // after the user toggled its checkbox. Multiplies image RGB → darkens.
         private static readonly Color PendingTint = new Color(110, 110, 110);
-        private const int WindowMaxHeight = 440;
-        private const int WindowBaseHeight = 130;   // shown while loading or empty
-        private const int ImagesTopMargin = 10;     // space above first image inside the panel
+        // Heights scale linearly with UiScale (no fixed chrome to subtract).
+        private const int BaseWindowMaxHeight = 440;
+        private const int BaseWindowBaseHeight = 130;
+        private int WindowMaxHeight => (int)Math.Round(BaseWindowMaxHeight * UiScale);
+        private int WindowBaseHeight => (int)Math.Round(BaseWindowBaseHeight * UiScale); // shown while loading or empty
+        private const int ImagesTopMargin = 5;     // space above first image inside the panel
         private const int ImagesBottomMargin = 10;  // matching space after last image
         // Approx vertical chrome per window: title bar + content top/bottom paddings + panel border.
         // Used to convert (sum of image heights) to (target window height).
@@ -701,9 +764,12 @@ namespace GW2app
         // the extra space at the bottom of windows.
         private const int WindowVerticalChrome = 40;
 
-        private static string TitleFor(ListDto list)
+        private string TitleFor(ListDto list)
         {
             int max = string.IsNullOrEmpty(ResetCountdownFor(list)) ? TitleMaxChars : TitleMaxCharsWithCountdown;
+            // Compact mode renders the title with DefaultFont18 (vs DefaultFont32),
+            // so ~1.5x more characters fit in the same width.
+            if (UiScale < 1.0f) max = (int)Math.Round(max * 1.4);
             return Truncate(list?.Name ?? list?.Id ?? "", max);
         }
 
@@ -729,8 +795,10 @@ namespace GW2app
             }
         }
 
-        private static string SubtitleFor(ListDto list)
+        private string SubtitleFor(ListDto list)
         {
+            // 75% UI hides the account name from the subtitle to save horizontal room.
+            if (UiScale < 1.0f) return "";
             string acct = null;
             try { acct = list?.Settings?["gw2AccountName"]?.Value<string>(); }
             catch { /* malformed settings; fall through */ }
