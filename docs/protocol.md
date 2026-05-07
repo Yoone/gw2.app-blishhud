@@ -87,8 +87,8 @@ image changed (or this is part of a bulk re-image). For unsubscribed lists,
 }
 ```
 
-`mime` is `image/png`, `image/jpeg`, or `image/webp`. Decode failures are
-logged and the previous image is retained.
+`mime` is `image/png` or `image/jpeg`, though the website currently only
+sends PNG. Decode failures are logged and the previous image is retained.
 
 `chat_link` is the chat-paste string for this entry (waypoint, POI, item
 code, etc.). Opaque to the server, pasted into game chat verbatim. May be
@@ -151,8 +151,3 @@ user must reconnect here manually, no silent retry.
 `protocol: 1` on `state` is the wire-format version. Incompatible changes
 bump it. The server validates on the first message of each connection and
 closes with `4002` on mismatch.
-
-## Out of scope
-
-- Authentication. The server trusts whoever connects.
-- Per-message-deflate. PNGs/JPEGs don't benefit; JSON metadata is small.
