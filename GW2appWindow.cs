@@ -18,11 +18,12 @@ namespace GW2app
         private static readonly Logger Logger = Logger.GetLogger<GW2appWindow>();
 
         // [Description] is read by Humanizer (used by Blish's enum dropdown) and is also
-        // honored on the round-trip back, so adding "(default)" doesn't break selection.
-        public enum BackgroundMode
+        // honored on the round-trip back, so the friendly labels persist correctly.
+        public enum WindowTheme
         {
-            [Description("Dark")]                   Dark,
-            [Description("Game texture (default)")] GameTexture,
+            [Description("Game (default)")] Game,
+            [Description("GW2.app")]        GW2app,
+            [Description("Black")]          Black,
         }
 
         private const int GameTextureAssetId = 155997;
@@ -31,12 +32,14 @@ namespace GW2app
         public const int ContentBottomMargin = 5;
 
         private static readonly Color BlackBg = new Color(0, 0, 0, 215);
+        // WindowTheme.GW2app: a dark blue-gray (#1c212b) matching the website's panel color.
+        private static readonly Color DarkBg  = new Color(0x1c, 0x21, 0x2b, 215);
 
         // Multiplier applied to RGB components when sampling the GW2 frame texture for
         // the "Game texture" mode. <1 darkens; 1.0 = original. Alpha is left untouched.
         private const float GameTextureBrightness = 0.6f;
 
-        private BackgroundMode _bgMode;
+        private WindowTheme _theme;
         private Texture2D _ownedBackground;
         private int _width;
         private int _height;
@@ -53,9 +56,9 @@ namespace GW2app
         private string _customTitle = "";
         private string _customSubtitle = "";
 
-        public GW2appWindow(int width, int height, BackgroundMode bgMode = BackgroundMode.GameTexture, bool compactTitle = false)
+        public GW2appWindow(int width, int height, WindowTheme theme = WindowTheme.Game, bool compactTitle = false)
         {
-            _bgMode = bgMode;
+            _theme = theme;
             _width = width;
             _height = height;
             _compactTitle = compactTitle;
@@ -176,10 +179,10 @@ namespace GW2app
         }
 
         // Switch background style at runtime (e.g. when the user changes the setting).
-        public void SetBackgroundMode(BackgroundMode mode)
+        public void SetWindowTheme(WindowTheme theme)
         {
-            if (mode == _bgMode) return;
-            _bgMode = mode;
+            if (theme == _theme) return;
+            _theme = theme;
             Recalculate();
         }
 
@@ -240,7 +243,7 @@ namespace GW2app
             // Drop any prior subscription before we choose what to load now.
             DetachGameTextureSubscription();
 
-            if (_bgMode == BackgroundMode.GameTexture)
+            if (_theme == WindowTheme.Game)
             {
                 var src = AsyncTexture2D.FromAssetId(GameTextureAssetId);
                 if (src != null && src.HasSwapped)
@@ -256,8 +259,10 @@ namespace GW2app
                     _gameTextureSwapHandler = (s, e) => Recalculate();
                     src.TextureSwapped += _gameTextureSwapHandler;
                 }
+                // Fall through to a solid black bg until the asset arrives.
+                return CreateSolidTexture(w, h, BlackBg);
             }
-            return CreateSolidTexture(w, h, BlackBg);
+            return CreateSolidTexture(w, h, _theme == WindowTheme.GW2app ? DarkBg : BlackBg);
         }
 
         private void DetachGameTextureSubscription()
@@ -413,7 +418,11 @@ namespace GW2app
         // Position is derived from TitleBarBounds (protected) and the same constants
         // WindowBase2 uses internally to compute the subtitle anchor.
 
-        private const int OverlayIconSize = 16;
+        // Icon and font default to "normal" sizes; in compact-title mode (UiScale < 1)
+        // they shrink to match the smaller subtitle font (Font14 vs Font16). Above
+        // 100% scale we leave them at the normal size — no upward growth.
+        private const int OverlayIconSize        = 16;
+        private const int OverlayIconSizeCompact = 14;
         private const int OverlayGapAfterIcon = 4;
         // Right margin: distance from the window's right edge to the right edge of the
         // overlay block. Sized to clear the X button (~32 px wide + ~16 px margin).
@@ -499,20 +508,24 @@ namespace GW2app
 
             if (_rechargeIcon == null || string.IsNullOrEmpty(_countdownText)) return;
 
-            var font = GameService.Content.DefaultFont16;
+            // In compact-title mode, match the subtitle's smaller font + a smaller icon.
+            int  iconSize = _compactTitle ? OverlayIconSizeCompact : OverlayIconSize;
+            var  font     = _compactTitle ? GameService.Content.DefaultFont14
+                                          : GameService.Content.DefaultFont16;
             int textWidth = (int)font.MeasureString(_countdownText).Width;
-            int blockWidth = OverlayIconSize + OverlayGapAfterIcon + textWidth;
+            int blockWidth = iconSize + OverlayGapAfterIcon + textWidth;
 
             int rightEdgeX = this.Size.X - OverlayRightMargin;
             int iconX = rightEdgeX - blockWidth;
-            int iconY = OverlayIconY;
+            int iconY = OverlayIconY + (OverlayIconSize - iconSize) / 2; // keep vertical center
 
-            spriteBatch.DrawOnCtrl(this, _rechargeIcon, new Rectangle(iconX, iconY, OverlayIconSize, OverlayIconSize));
+            spriteBatch.DrawOnCtrl(this, _rechargeIcon, new Rectangle(iconX, iconY, iconSize, iconSize));
 
-            int textX = iconX + OverlayIconSize + OverlayGapAfterIcon;
+            int textX = iconX + iconSize + OverlayGapAfterIcon;
             // Text rect taller than icon (font line height ~22). Top-align it with the
-            // icon top so the text and icon visually share a row.
-            int textY = iconY - 3;
+            // icon top so the text and icon visually share a row. Compact mode lifts
+            // the text 2px more so it visually aligns with the smaller subtitle baseline.
+            int textY = iconY - (_compactTitle ? 5 : 3);
             spriteBatch.DrawStringOnCtrl(this, _countdownText, font, new Rectangle(textX, textY, textWidth + 2, 22), Color.White);
         }
 

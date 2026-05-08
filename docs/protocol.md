@@ -42,11 +42,13 @@ a time. A new connection immediately closes any existing one with code
 
 ```
 List  = { id, name, settings (opaque JSON), entries: [Entry, ...], is_loot_bag?: bool }
-Entry = { completed: bool, autoCompleted: bool }
+Entry = { completed: bool, autoCompleted: bool, entry_type?: string }
 ```
 
 Entries have **no stable ID**. They are addressed by `(listId, index)`
 within the latest `state`.
+
+`entry_type` is a short string identifying the kind of entry, mirroring the discriminator the website uses internally (e.g. `"item"`, `"timer"`, `"location"`, `"mapchest"`, `"recipe"`, `"dailypsna"`, `"tpdelivery"`, `"wv"`, `"custom"`, etc.). It exists so the module can mirror website-side per-type behaviour, e.g. an in-game "Copy waypoints" can include only entries with `entry_type === "location"` (those are the ones that may carry a Waypoint or POI `chat_link`) and `entry_type === "dailypsna"` (which carries multiple vendor waypoints in `chat_link`, space-separated).
 
 ### Loot Bag
 

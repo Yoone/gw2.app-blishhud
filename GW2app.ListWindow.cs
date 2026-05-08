@@ -53,7 +53,7 @@ namespace GW2app
 
         private void BuildInfoWindow()
         {
-            _infoWindow = new GW2appWindow(430, 460, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.GameTexture)
+            _infoWindow = new GW2appWindow(430, 460, _windowTheme?.Value ?? GW2appWindow.WindowTheme.Game)
             {
                 Parent = GameService.Graphics.SpriteScreen,
                 Title = "Connect GW2.app",
@@ -309,7 +309,7 @@ namespace GW2app
 
             bool compact = UiScale < 1.0f;
             int initialWidth = WindowWidthFor(list);
-            var window = new GW2appWindow(initialWidth, WindowMaxHeight, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.GameTexture, compactTitle: compact)
+            var window = new GW2appWindow(initialWidth, WindowMaxHeight, _windowTheme?.Value ?? GW2appWindow.WindowTheme.Game, compactTitle: compact)
             {
                 Parent = GameService.Graphics.SpriteScreen,
                 Title = TitleFor(list),
@@ -511,12 +511,19 @@ namespace GW2app
                 return;
             }
 
-            // Collect chat_links for this list (entry order, only non-empty).
+            // Collect individual waypoint codes for this list (entry order, then
+            // space-split since one chat_link may bundle multiple codes; PSNA carries
+            // ~4 vendor waypoints per entry). When entry_type is present we restrict
+            // to waypoint-bearing types ("location" and "dailypsna") per protocol;
+            // entries without entry_type are accepted as a fallback for older clients.
             var chatLinks = new List<string>();
             for (int i = 0; i < total; i++)
             {
+                var t = list.Entries[i]?.EntryType;
+                bool waypointEligible = string.IsNullOrEmpty(t) || t == "location" || t == "dailypsna";
+                if (!waypointEligible) continue;
                 if (_entryChatLinks.TryGetValue(EntryKey(listId, i), out var cl) && !string.IsNullOrEmpty(cl))
-                    chatLinks.Add(cl);
+                    chatLinks.AddRange(cl.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
             }
             bool footerEnabled = ShowCopyWaypointsButton;
             bool hasChatLinks = chatLinks.Count > 0;
@@ -581,32 +588,23 @@ namespace GW2app
                     bool collapsed = _completedSectionCollapsed.Contains(listId);
                     var btnText = (collapsed ? "Show completed (" : "Hide completed (") + completedCount + ")";
                     y += 6;
-                    int btnWidth  = (int)Math.Round(200 * UiScale);
-                    int btnHeight = (int)Math.Round(30  * UiScale);
-                    var btn = new StandardButton()
-                    {
-                        Text = btnText,
-                        Width = btnWidth,
-                        Height = btnHeight,
-                        Location = new Point(CheckboxLeftMargin, y),
-                        Parent = entry.Panel,
-                    };
-                    // Smaller font in compact mode. StandardButton inherits LabelBase; the
-                    // _font field is protected with no public setter, so we poke it via
-                    // reflection. Cached FieldInfo at the bottom of the file.
-                    if (UiScale < 1.0f && _labelBaseFontField != null)
-                    {
-                        try { _labelBaseFontField.SetValue(btn, GameService.Content.DefaultFont12); }
-                        catch (Exception ex) { Logger.Warn($"Failed to override button font: {ex.Message}"); }
-                    }
+                    int btnWidth  = ActionButtonWidth;
+                    int btnHeight = ActionButtonHeight;
+                    // Use ContentRegion.Width so the centering matches the footer button
+                    // (whose panel has no border, hence ContentRegion.X = 0). Children's
+                    // Location is relative to the parent's ContentRegion.
+                    int btnX = Math.Max(0, (entry.Panel.ContentRegion.Width - btnWidth) / 2);
                     var capturedListId = listId;
-                    btn.Click += (s, e) =>
-                    {
-                        if (!_completedSectionCollapsed.Add(capturedListId))
-                            _completedSectionCollapsed.Remove(capturedListId);
-                        RefreshListWindow(capturedListId);
-                    };
-                    y += btn.Height + 6;
+                    ActionButton.Create(
+                        entry.Panel, btnText, new Point(btnX, y), btnWidth, btnHeight,
+                        UiScale, CurrentTheme,
+                        onClick: () =>
+                        {
+                            if (!_completedSectionCollapsed.Add(capturedListId))
+                                _completedSectionCollapsed.Remove(capturedListId);
+                            RefreshListWindow(capturedListId);
+                        });
+                    y += btnHeight + 6;
 
                     if (!collapsed)
                     {
@@ -769,6 +767,9 @@ namespace GW2app
         // text at width/2 - textWidth/2 with Left alignment, which IS visually centered.
         // Setting Center put text in the right half of those bounds, skewing right.)
 
+        private GW2appWindow.WindowTheme CurrentTheme =>
+            _windowTheme?.Value ?? GW2appWindow.WindowTheme.Game;
+
         // Resize the window. The panel is auto-synced via the window's LayoutRefreshed
         // event (subscribed once in OpenListWindow), so we only need to nudge the
         // panel here when SetWindowHeight short-circuited (newHeight == current).
@@ -804,47 +805,39 @@ namespace GW2app
 
         // ---- Footer + waypoint copy mode ----
 
-        // Negative top margin lets the button sit slightly above the footer-panel top
-        // (overflows into the main panel area) so the visual bottom-of-window gap below
-        // the button stays the same while the whole footer reserve shrinks. Adjust to
-        // tune button-to-window-bottom spacing.
-        private const int FooterTopMargin   = -1; // was 1, -2 more to bump button up
-        private const int FooterButtonH     = 26;
-        private const int FooterReserveTotal = FooterTopMargin + FooterButtonH;
+        // Standard dimensions delegated to ActionButton.cs (the in-panel action
+        // button styling lives there since it varies by background style).
+        private int ActionButtonWidth  => ActionButton.WidthFor(UiScale);
+        private int ActionButtonHeight => ActionButton.HeightFor(UiScale);
+
+        // Vertical offset of the footer button within the footer panel. Negative
+        // values let it sit slightly above the panel's top edge.
+        private const int FooterTopMargin   = -4;
+        private int FooterReserveTotal      => FooterTopMargin + ActionButtonHeight;
 
         private void RenderFooter(ListWindowEntry entry, string listId, int chatLinkCount, bool inCopyMode)
         {
             if (entry.FooterPanel == null) return;
 
             string text = inCopyMode ? "Back" : "Copy waypoints";
-            int btnW = (int)Math.Round(180 * UiScale);
-            int btnH = FooterButtonH;
+            int btnW = ActionButtonWidth;
+            int btnH = ActionButtonHeight;
             // Center horizontally within the footer panel.
             int btnX = Math.Max(0, (entry.FooterPanel.Width - btnW) / 2);
             int btnY = FooterTopMargin;
 
-            var btn = new StandardButton()
-            {
-                Text     = text,
-                Width    = btnW,
-                Height   = btnH,
-                Location = new Point(btnX, btnY),
-                Parent   = entry.FooterPanel,
-            };
-            if (UiScale < 1.0f && _labelBaseFontField != null)
-            {
-                try { _labelBaseFontField.SetValue(btn, GameService.Content.DefaultFont12); } catch { }
-            }
-
             var capturedListId = listId;
-            btn.Click += (s, e) =>
-            {
-                if (_copyModeListIds.Contains(capturedListId))
-                    _copyModeListIds.Remove(capturedListId);
-                else
-                    _copyModeListIds.Add(capturedListId);
-                RefreshListWindow(capturedListId);
-            };
+            ActionButton.Create(
+                entry.FooterPanel, text, new Point(btnX, btnY), btnW, btnH,
+                UiScale, CurrentTheme,
+                onClick: () =>
+                {
+                    if (_copyModeListIds.Contains(capturedListId))
+                        _copyModeListIds.Remove(capturedListId);
+                    else
+                        _copyModeListIds.Add(capturedListId);
+                    RefreshListWindow(capturedListId);
+                });
         }
 
         // Lays out the copy-waypoints panel: slider + chunk buttons. Returns the
@@ -859,11 +852,15 @@ namespace GW2app
             int max = (_maxWaypointsPerCopy?.Value ?? GW2app.MaxWaypointsPerMessage);
             max = Math.Max(1, Math.Min(GW2app.MaxWaypointsPerMessage, max));
 
-            const int leftPad = 8;
-            int innerWidth = Math.Max(0, entry.Panel.Width - leftPad - 16); // small right inset
-            const int chunkH = 30;
-            const int chunkGap = 4;
-            int y = ImagesTopMargin;
+            const int sidePad           = 20; // visual left padding
+            const int rightReserve      = 25; // right padding incl. scrollbar overlap reserve
+            const int topPad            = 20; // space above the header
+            const int bottomPad         = 20; // space below the last chunk button
+            const int sliderToChunksGap = 10; // extra space between slider and first chunk
+            const int chunkH            = 30;
+            const int chunkGap          = 4;
+            int innerWidth = Math.Max(0, entry.Panel.Width - sidePad - rightReserve);
+            int y = topPad;
 
             // Header row: "Max waypoints per message: 8" / "Max"
             var headerLabel = new Label()
@@ -872,12 +869,13 @@ namespace GW2app
                 Font          = GameService.Content.DefaultFont14,
                 TextColor     = Color.LightGray,
                 AutoSizeWidth = true,
-                Location      = new Point(leftPad, y),
+                Location      = new Point(sidePad, y),
                 Parent        = entry.Panel,
             };
             y += 18;
 
             // Slider 1..15.
+            const int sliderH = 16;
             var slider = new TrackBar()
             {
                 MinValue  = 1,
@@ -885,11 +883,11 @@ namespace GW2app
                 Value     = max,
                 SmallStep = true,
                 Width     = innerWidth,
-                Height    = 16,
-                Location  = new Point(leftPad, y),
+                Height    = sliderH,
+                Location  = new Point(sidePad, y),
                 Parent    = entry.Panel,
             };
-            y += 22;
+            y += sliderH + sliderToChunksGap;
             int chunksStartY = y;
 
             // Track chunk buttons so the re-render delegate can dispose only those.
@@ -913,12 +911,13 @@ namespace GW2app
                         Text     = label,
                         Width    = innerWidth,
                         Height   = chunkH,
-                        Location = new Point(leftPad, yy),
+                        Location = new Point(sidePad, yy),
                         Parent   = entry.Panel,
                     };
                     if (UiScale < 1.0f && _labelBaseFontField != null)
                     {
                         try { _labelBaseFontField.SetValue(chunkBtn, GameService.Content.DefaultFont12); } catch { }
+                        chunkBtn.Invalidate();
                     }
                     var capturedCodes = codes;
                     chunkBtn.Click += (s, e) => CopyChatLinkToClipboard(capturedCodes);
@@ -926,7 +925,7 @@ namespace GW2app
                     yy += chunkH + chunkGap;
                     idx++;
                 }
-                return yy + ImagesBottomMargin;
+                return yy + bottomPad;
             }
 
             int contentHeight = RenderChunks(max);

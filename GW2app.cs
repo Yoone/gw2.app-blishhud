@@ -51,10 +51,10 @@ namespace GW2app
             // Sub-collections render as labeled panels in Blish's auto-generated settings
             // view. We use them to group related options visually.
             var appearance = settings.AddSubCollection("appearance", true, () => "Appearance");
-            _backgroundMode = appearance.DefineSetting(
-                "windowStyle",
-                GW2appWindow.BackgroundMode.GameTexture,
-                () => "Window background",
+            _windowTheme = appearance.DefineSetting(
+                "windowTheme",
+                GW2appWindow.WindowTheme.Game,
+                () => "Window theme",
                 () => "Changes the background of windows");
             _showAccountName = appearance.DefineSetting(
                 "showAccountName",
@@ -96,7 +96,7 @@ namespace GW2app
         public override Blish_HUD.Graphics.UI.IView GetSettingsView()
         {
             return new GW2appSettingsView(
-                _backgroundMode,
+                _windowTheme,
                 _showAccountName,
                 _showCopyWaypointsButton,
                 _uiScalePct,
@@ -121,8 +121,8 @@ namespace GW2app
             CreateCornerIcon();
             RebuildContextMenu();
 
-            if (_backgroundMode != null)
-                _backgroundMode.SettingChanged += OnBackgroundModeChanged;
+            if (_windowTheme != null)
+                _windowTheme.SettingChanged += OnWindowThemeChanged;
             if (_uiScalePct != null)
                 _uiScalePct.SettingChanged += OnUiScaleChanged;
             if (_showAccountName != null)
@@ -135,11 +135,17 @@ namespace GW2app
             await Task.CompletedTask;
         }
 
-        private void OnBackgroundModeChanged(object sender, ValueChangedEventArgs<GW2appWindow.BackgroundMode> e)
+        private void OnWindowThemeChanged(object sender, ValueChangedEventArgs<GW2appWindow.WindowTheme> e)
         {
             foreach (var entry in _listWindows.Values)
-                entry.Window?.SetBackgroundMode(e.NewValue);
-            _infoWindow?.SetBackgroundMode(e.NewValue);
+                entry.Window?.SetWindowTheme(e.NewValue);
+            _infoWindow?.SetWindowTheme(e.NewValue);
+
+            // Action buttons (Hide completed, Copy waypoints, Back) swap between
+            // StandardButton and Label-as-button per theme; re-render so they
+            // pick up the new style.
+            foreach (var id in _listWindows.Keys.ToList())
+                RefreshListWindow(id);
         }
 
         // Apply a new UI scale in-place: resize each open window, switch its title mode,
@@ -426,8 +432,8 @@ namespace GW2app
             // Block UpdateSubscriptions from running during teardown.
             _unloading = true;
 
-            if (_backgroundMode != null)
-                _backgroundMode.SettingChanged -= OnBackgroundModeChanged;
+            if (_windowTheme != null)
+                _windowTheme.SettingChanged -= OnWindowThemeChanged;
             if (_uiScalePct != null)
                 _uiScalePct.SettingChanged -= OnUiScaleChanged;
             if (_showAccountName != null)
@@ -534,7 +540,7 @@ namespace GW2app
         // out of UI event handlers (e.g. slider ValueChanged) so we don't dispose the
         // very control that fired the event.
         private readonly HashSet<string> _deferredRefreshes = new HashSet<string>();
-        private SettingEntry<GW2appWindow.BackgroundMode> _backgroundMode;
+        private SettingEntry<GW2appWindow.WindowTheme> _windowTheme;
         private SettingEntry<int> _uiScalePct;
         private SettingEntry<bool> _showAccountName;
         private SettingEntry<bool> _showCopyWaypointsButton;

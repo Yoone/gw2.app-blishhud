@@ -24,7 +24,7 @@ namespace GW2app
         private const int DropdownWidth = 140; // ~50% of Blish's default
         private const int TopPad        = 8;
 
-        private readonly SettingEntry<GW2appWindow.BackgroundMode> _backgroundMode;
+        private readonly SettingEntry<GW2appWindow.WindowTheme> _windowTheme;
         private readonly SettingEntry<bool> _showAccountName;
         private readonly SettingEntry<bool> _showCopyWaypointsButton;
         private readonly SettingEntry<int>  _uiScalePct;
@@ -34,16 +34,16 @@ namespace GW2app
         private EventHandler<ValueChangedEventArgs<int>>  _scaleChangedHandler;
         private EventHandler<ValueChangedEventArgs<bool>> _accountChangedHandler;
         private EventHandler<ValueChangedEventArgs<bool>> _copyBtnChangedHandler;
-        private EventHandler<ValueChangedEventArgs<GW2appWindow.BackgroundMode>> _bgChangedHandler;
+        private EventHandler<ValueChangedEventArgs<GW2appWindow.WindowTheme>> _themeChangedHandler;
 
         public GW2appSettingsView(
-            SettingEntry<GW2appWindow.BackgroundMode> backgroundMode,
+            SettingEntry<GW2appWindow.WindowTheme> windowTheme,
             SettingEntry<bool>                        showAccountName,
             SettingEntry<bool>                        showCopyWaypointsButton,
             SettingEntry<int>                         uiScalePct,
             Action                                    onResetScale)
         {
-            _backgroundMode          = backgroundMode;
+            _windowTheme             = windowTheme;
             _showAccountName         = showAccountName;
             _showCopyWaypointsButton = showCopyWaypointsButton;
             _uiScalePct              = uiScalePct;
@@ -86,20 +86,20 @@ namespace GW2app
                 Location = new Point(leftX + columnWidth - DropdownWidth, ly),
                 Parent   = buildPanel,
             };
-            // Explicit order so the default (Game texture) appears first; Enum.GetValues
-            // would otherwise sort by numeric value (Dark = 0, GameTexture = 1).
+            // Explicit order: Game (default), Dark, Black.
             var bgOrder = new[]
             {
-                GW2appWindow.BackgroundMode.GameTexture,
-                GW2appWindow.BackgroundMode.Dark,
+                GW2appWindow.WindowTheme.Game,
+                GW2appWindow.WindowTheme.GW2app,
+                GW2appWindow.WindowTheme.Black,
             };
             foreach (var v in bgOrder)
                 bgDropdown.Items.Add(EnumLabel(v));
-            bgDropdown.SelectedItem = EnumLabel(_backgroundMode.Value);
+            bgDropdown.SelectedItem = EnumLabel(_windowTheme.Value);
             bgDropdown.ValueChanged += (s, e) =>
             {
-                if (TryParseEnum<GW2appWindow.BackgroundMode>(e.CurrentValue, out var v))
-                    _backgroundMode.Value = v;
+                if (TryParseEnum<GW2appWindow.WindowTheme>(e.CurrentValue, out var v))
+                    _windowTheme.Value = v;
             };
             ly += 36;
 
@@ -219,12 +219,12 @@ namespace GW2app
             };
             _showCopyWaypointsButton.SettingChanged += _copyBtnChangedHandler;
 
-            _bgChangedHandler = (s, e) =>
+            _themeChangedHandler = (s, e) =>
             {
                 var label = EnumLabel(e.NewValue);
                 if (bgDropdown.SelectedItem != label) bgDropdown.SelectedItem = label;
             };
-            _backgroundMode.SettingChanged += _bgChangedHandler;
+            _windowTheme.SettingChanged += _themeChangedHandler;
         }
 
         protected override void Unload()
@@ -232,13 +232,13 @@ namespace GW2app
             if (_scaleChangedHandler   != null && _uiScalePct              != null) _uiScalePct.SettingChanged              -= _scaleChangedHandler;
             if (_accountChangedHandler != null && _showAccountName         != null) _showAccountName.SettingChanged         -= _accountChangedHandler;
             if (_copyBtnChangedHandler != null && _showCopyWaypointsButton != null) _showCopyWaypointsButton.SettingChanged -= _copyBtnChangedHandler;
-            if (_bgChangedHandler      != null && _backgroundMode          != null) _backgroundMode.SettingChanged          -= _bgChangedHandler;
+            if (_themeChangedHandler   != null && _windowTheme             != null) _windowTheme.SettingChanged             -= _themeChangedHandler;
         }
 
         private static string FormatScale(int pct) => "List UI scale: " + pct + "%";
 
         // Reads the [Description] attribute on an enum value, falling back to the
-        // member name. Lets us reuse the labels declared on BackgroundMode without
+        // member name. Lets us reuse the labels declared on WindowTheme without
         // a Humanizer dependency.
         private static string EnumLabel<T>(T value) where T : Enum
         {

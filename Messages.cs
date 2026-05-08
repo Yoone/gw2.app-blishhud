@@ -55,6 +55,10 @@ namespace GW2app
     {
         [JsonProperty("completed")] public bool Completed;
         [JsonProperty("autoCompleted")] public bool AutoCompleted;
+        // Optional. Mirrors the website's entry-type discriminator. Used in the
+        // module to scope features like "Copy waypoints" to entries that carry a
+        // chat_link representing a location (currently "location" and "dailypsna").
+        [JsonProperty("entry_type")] public string EntryType;
     }
 
     internal class EntryMessage
