@@ -140,7 +140,7 @@ namespace GW2app
 
                 entry.Window.SetCompactTitle(compact);
                 // SetWindowSize fires LayoutRefreshed which syncs the panel + scrollbar.
-                entry.Window.SetWindowSize(WindowWidth, WindowMaxHeight);
+                entry.Window.SetWindowSize(WindowWidthFor(list), WindowMaxHeight);
                 if (list != null)
                 {
                     entry.Window.Title = TitleFor(list);

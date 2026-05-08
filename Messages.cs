@@ -39,6 +39,7 @@ namespace GW2app
         [JsonProperty("name")] public string Name;
         [JsonProperty("settings")] public JToken Settings;
         [JsonProperty("entries")] public List<EntryDto> Entries;
+        [JsonProperty("is_loot_bag")] public bool IsLootBag;
     }
 
     internal class EntryDto

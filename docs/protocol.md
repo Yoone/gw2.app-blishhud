@@ -41,12 +41,19 @@ a time. A new connection immediately closes any existing one with code
 ## Domain model
 
 ```
-List  = { id, name, settings (opaque JSON), entries: [Entry, ...] }
+List  = { id, name, settings (opaque JSON), entries: [Entry, ...], is_loot_bag?: bool }
 Entry = { completed: bool, autoCompleted: bool }
 ```
 
 Entries have **no stable ID**. They are addressed by `(listId, index)`
 within the latest `state`.
+
+### Loot Bag
+
+The user's Loot Bag is a single, special list flagged with `is_loot_bag: true`. There is at most one per session. Treat it as a regular list for imagery purposes, with two differences:
+
+- **ID**: A logged-in user's loot bag has a real UUID like any other list. An anonymous (not-logged-in) user's loot bag has no persisted ID and is sent under the stable wire ID `"loot-bag"` instead. The module should key off `is_loot_bag` rather than the ID string when special-casing it.
+- **Completion is read-only**: the loot bag has no per-entry completion concept. The server MUST NOT send `set_entry_completed` for any list with `is_loot_bag: true`; the client ignores such messages with `console.error`.
 
 ## Messages
 

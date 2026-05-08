@@ -267,6 +267,7 @@ namespace GW2app
                 bucket.Add(list);
             }
 
+            int addedCount = 0;
             foreach (var kvp in byAccount)
             {
                 if (!string.IsNullOrEmpty(kvp.Key))
@@ -281,7 +282,17 @@ namespace GW2app
                     var label = string.IsNullOrEmpty(kvp.Key) ? name : "  " + name;
                     var item = _contextMenuStrip.AddMenuItem(label);
                     item.Click += (s, e) => OpenListWindow(listId);
+                    addedCount++;
                 }
+            }
+
+            // All lists were filtered out (e.g. missing/empty id). Surface a placeholder
+            // so the right-click menu still opens; otherwise ContextMenuStrip refuses
+            // to display when it has zero children.
+            if (addedCount == 0)
+            {
+                var item = _contextMenuStrip.AddMenuItem("(no usable lists)");
+                item.Enabled = false;
             }
         }
 
@@ -297,7 +308,8 @@ namespace GW2app
             if (list == null) return;
 
             bool compact = UiScale < 1.0f;
-            var window = new GW2appWindow(WindowWidth, WindowMaxHeight, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.Dark, compactTitle: compact)
+            int initialWidth = WindowWidthFor(list);
+            var window = new GW2appWindow(initialWidth, WindowMaxHeight, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.Dark, compactTitle: compact)
             {
                 Parent = GameService.Graphics.SpriteScreen,
                 Title = TitleFor(list),
@@ -478,6 +490,7 @@ namespace GW2app
 
             string sortMode = SortEntriesFor(list);
             bool groupCompleted = string.Equals(sortMode, "GROUP_COMPLETED", StringComparison.OrdinalIgnoreCase);
+            bool noCheckbox = list.IsLootBag;
 
             // Tracks whether any entry has been rendered in the current section. Drives
             // divider drawing (we draw a 1px line BEFORE every rendered entry except the
@@ -488,7 +501,7 @@ namespace GW2app
             if (!groupCompleted)
             {
                 for (int i = 0; i < total; i++)
-                    RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent);
+                    RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent, noCheckbox);
             }
             else
             {
@@ -497,7 +510,7 @@ namespace GW2app
                 {
                     var e = list.Entries[i];
                     if (e == null || e.Completed || e.AutoCompleted) continue;
-                    RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent);
+                    RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent, noCheckbox);
                 }
 
                 // Count completed entries to render the header (and section, if expanded).
@@ -547,11 +560,18 @@ namespace GW2app
                         {
                             var e = list.Entries[i];
                             if (e == null || !(e.Completed || e.AutoCompleted)) continue;
-                            RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent);
+                            RenderEntry(entry, listId, list, i, ref y, ref sectionHasContent, noCheckbox);
                         }
                     }
                 }
             }
+
+            // Sync window width to the loot-bag flag (drops the checkbox column when
+            // is_loot_bag is true). Width may have been set differently at OpenListWindow
+            // time if the catalog state was empty/stale.
+            int desiredWidth = WindowWidthFor(list);
+            if (entry.Window.Size.X != desiredWidth)
+                entry.Window.SetWindowSize(desiredWidth, entry.Window.Size.Y);
 
             // Resize the window to fit content (clamped between base and max).
             int contentHeight = y + ImagesBottomMargin;
@@ -562,41 +582,46 @@ namespace GW2app
         // Renders one entry's checkbox + image (+ pending overlay) into the panel and
         // advances `y`. Skips entries with no cached image. Draws a 1px divider above
         // the entry when the section already has at least one rendered entry, and sets
-        // sectionHasContent to true.
-        private void RenderEntry(ListWindowEntry entry, string listId, ListDto list, int index, ref int y, ref bool sectionHasContent)
+        // sectionHasContent to true. When `noCheckbox` is true (loot-bag list), the
+        // checkbox is omitted and the image starts at the panel's left edge.
+        private void RenderEntry(ListWindowEntry entry, string listId, ListDto list, int index, ref int y, ref bool sectionHasContent, bool noCheckbox)
         {
             var key = EntryKey(listId, index);
             if (!_entryImages.TryGetValue(key, out var tex) || tex == null) return;
 
             if (sectionHasContent)
-                DrawDivider(entry.Panel, ref y);
+                DrawDivider(entry.Panel, ref y, noCheckbox);
             sectionHasContent = true;
 
             var size = ScaledSize(tex);
             var entryDto = list.Entries[index];
-            bool autoChecked = entryDto != null && entryDto.AutoCompleted;
-            bool isChecked = autoChecked || (entryDto != null && entryDto.Completed);
             bool isPending = _pendingEntries.Contains(key);
 
-            var checkbox = new Checkbox()
-            {
-                Location = new Point(CheckboxLeftMargin, y + (size.Y - CheckboxSize) / 2),
-                Size = new Point(CheckboxSize, CheckboxSize),
-                Checked = isChecked,
-                Enabled = !autoChecked && !isPending,
-                Parent = entry.Panel,
-            };
+            int imageX = noCheckbox ? 0 : CheckboxColumnWidth;
 
-            if (!autoChecked && !isPending)
+            if (!noCheckbox)
             {
-                var capturedListId = listId;
-                int capturedIndex = index;
-                checkbox.CheckedChanged += (s, e) => OnCheckboxToggled(checkbox, capturedListId, capturedIndex);
+                bool autoChecked = entryDto != null && entryDto.AutoCompleted;
+                bool isChecked = autoChecked || (entryDto != null && entryDto.Completed);
+                var checkbox = new Checkbox()
+                {
+                    Location = new Point(CheckboxLeftMargin, y + (size.Y - CheckboxSize) / 2),
+                    Size = new Point(CheckboxSize, CheckboxSize),
+                    Checked = isChecked,
+                    Enabled = !autoChecked && !isPending,
+                    Parent = entry.Panel,
+                };
+                if (!autoChecked && !isPending)
+                {
+                    var capturedListId = listId;
+                    int capturedIndex = index;
+                    checkbox.CheckedChanged += (s, e) => OnCheckboxToggled(checkbox, capturedListId, capturedIndex);
+                }
             }
 
             var image = new Image(tex)
             {
-                Location = new Point(CheckboxColumnWidth, y),
+                Location = new Point(imageX, y),
                 Size = size,
                 Tint = isPending ? PendingTint : Color.White,
                 Parent = entry.Panel,
@@ -615,7 +640,7 @@ namespace GW2app
                 new LoadingSpinner()
                 {
                     Location = new Point(
-                        CheckboxColumnWidth + (size.X - pendingSpinnerSize) / 2,
+                        imageX + (size.X - pendingSpinnerSize) / 2,
                         y + (size.Y - pendingSpinnerSize) / 2),
                     Size = new Point(pendingSpinnerSize, pendingSpinnerSize),
                     Parent = entry.Panel,
@@ -629,17 +654,17 @@ namespace GW2app
         // Spans from the panel's left edge (just before the checkbox) to the right edge
         // of the entry image. No padding; sits flush against both images.
         private const int DividerLeftX = 0;
-        private int DividerRightX => CheckboxColumnWidth + DisplayWidth;
+        private int DividerRightX(bool noCheckbox) => (noCheckbox ? 0 : CheckboxColumnWidth) + DisplayWidth;
         // White at 15% opacity, premultiplied (Blish's SpriteBatch expects premultiplied alpha).
         private static readonly Color DividerColor = new Color(38, 38, 38, 38);
 
-        private void DrawDivider(Container parent, ref int y)
+        private void DrawDivider(Container parent, ref int y, bool noCheckbox)
         {
             EnsureDividerTexture();
             new Image(_dividerTexture)
             {
                 Location = new Point(DividerLeftX, y),
-                Size = new Point(DividerRightX - DividerLeftX, 1),
+                Size = new Point(DividerRightX(noCheckbox) - DividerLeftX, 1),
                 Parent = parent,
             };
             y += 1;
@@ -711,6 +736,9 @@ namespace GW2app
         // UiScale; the scrollbar / checkbox sizes stay constant.
         private const int FixedRightChrome = 20; // scrollbar + right padding
         private int WindowWidth => CheckboxColumnWidth + DisplayWidth + FixedRightChrome;
+        // Loot-bag lists have no checkboxes, so the checkbox column is dropped entirely.
+        private int LootBagWindowWidth => DisplayWidth + FixedRightChrome;
+        private int WindowWidthFor(ListDto list) => (list?.IsLootBag ?? false) ? LootBagWindowWidth : WindowWidth;
         private const int CheckboxSize = 22;
         private const int CheckboxLeftMargin = 8;  // space between panel edge and checkbox
         // Image stays at the same panel-x as before; reduce the visual gap between
@@ -962,6 +990,11 @@ namespace GW2app
         // a fresh entry message for this position (handled in ApplyEntry).
         private void OnCheckboxToggled(Checkbox checkbox, string listId, int index)
         {
+            // Loot-bag lists are read-only per protocol; checkboxes shouldn't render
+            // for them, but guard here too.
+            var list = _catalog?.Lists?.FirstOrDefault(l => l.Id == listId);
+            if (list != null && list.IsLootBag) return;
+
             _pendingEntries.Add(EntryKey(listId, index));
             _ = SendSetEntryCompletedAsync(listId, index, checkbox.Checked);
             RefreshListWindow(listId);
