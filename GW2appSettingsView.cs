@@ -26,24 +26,28 @@ namespace GW2app
 
         private readonly SettingEntry<GW2appWindow.BackgroundMode> _backgroundMode;
         private readonly SettingEntry<bool> _showAccountName;
+        private readonly SettingEntry<bool> _showCopyWaypointsButton;
         private readonly SettingEntry<int>  _uiScalePct;
         private readonly Action _onResetScale;
 
         // Subscriptions kept so we can detach in Unload.
         private EventHandler<ValueChangedEventArgs<int>>  _scaleChangedHandler;
         private EventHandler<ValueChangedEventArgs<bool>> _accountChangedHandler;
+        private EventHandler<ValueChangedEventArgs<bool>> _copyBtnChangedHandler;
         private EventHandler<ValueChangedEventArgs<GW2appWindow.BackgroundMode>> _bgChangedHandler;
 
         public GW2appSettingsView(
             SettingEntry<GW2appWindow.BackgroundMode> backgroundMode,
             SettingEntry<bool>                        showAccountName,
+            SettingEntry<bool>                        showCopyWaypointsButton,
             SettingEntry<int>                         uiScalePct,
             Action                                    onResetScale)
         {
-            _backgroundMode  = backgroundMode;
-            _showAccountName = showAccountName;
-            _uiScalePct      = uiScalePct;
-            _onResetScale    = onResetScale;
+            _backgroundMode          = backgroundMode;
+            _showAccountName         = showAccountName;
+            _showCopyWaypointsButton = showCopyWaypointsButton;
+            _uiScalePct              = uiScalePct;
+            _onResetScale            = onResetScale;
         }
 
         protected override void Build(Container buildPanel)
@@ -82,7 +86,14 @@ namespace GW2app
                 Location = new Point(leftX + columnWidth - DropdownWidth, ly),
                 Parent   = buildPanel,
             };
-            foreach (GW2appWindow.BackgroundMode v in Enum.GetValues(typeof(GW2appWindow.BackgroundMode)))
+            // Explicit order so the default (Game texture) appears first; Enum.GetValues
+            // would otherwise sort by numeric value (Dark = 0, GameTexture = 1).
+            var bgOrder = new[]
+            {
+                GW2appWindow.BackgroundMode.GameTexture,
+                GW2appWindow.BackgroundMode.Dark,
+            };
+            foreach (var v in bgOrder)
                 bgDropdown.Items.Add(EnumLabel(v));
             bgDropdown.SelectedItem = EnumLabel(_backgroundMode.Value);
             bgDropdown.ValueChanged += (s, e) =>
@@ -100,6 +111,16 @@ namespace GW2app
                 Parent   = buildPanel,
             };
             acctCheckbox.CheckedChanged += (s, e) => _showAccountName.Value = e.Checked;
+            ly += 30;
+
+            var copyBtnCheckbox = new Checkbox
+            {
+                Text     = "Show \"Copy waypoints\" button in lists",
+                Checked  = _showCopyWaypointsButton.Value,
+                Location = new Point(leftX, ly + 4),
+                Parent   = buildPanel,
+            };
+            copyBtnCheckbox.CheckedChanged += (s, e) => _showCopyWaypointsButton.Value = e.Checked;
             ly += 30;
             int leftBottom = ly;
 
@@ -192,6 +213,12 @@ namespace GW2app
             };
             _showAccountName.SettingChanged += _accountChangedHandler;
 
+            _copyBtnChangedHandler = (s, e) =>
+            {
+                if (copyBtnCheckbox.Checked != e.NewValue) copyBtnCheckbox.Checked = e.NewValue;
+            };
+            _showCopyWaypointsButton.SettingChanged += _copyBtnChangedHandler;
+
             _bgChangedHandler = (s, e) =>
             {
                 var label = EnumLabel(e.NewValue);
@@ -202,9 +229,10 @@ namespace GW2app
 
         protected override void Unload()
         {
-            if (_scaleChangedHandler   != null && _uiScalePct      != null) _uiScalePct.SettingChanged      -= _scaleChangedHandler;
-            if (_accountChangedHandler != null && _showAccountName != null) _showAccountName.SettingChanged -= _accountChangedHandler;
-            if (_bgChangedHandler      != null && _backgroundMode  != null) _backgroundMode.SettingChanged  -= _bgChangedHandler;
+            if (_scaleChangedHandler   != null && _uiScalePct              != null) _uiScalePct.SettingChanged              -= _scaleChangedHandler;
+            if (_accountChangedHandler != null && _showAccountName         != null) _showAccountName.SettingChanged         -= _accountChangedHandler;
+            if (_copyBtnChangedHandler != null && _showCopyWaypointsButton != null) _showCopyWaypointsButton.SettingChanged -= _copyBtnChangedHandler;
+            if (_bgChangedHandler      != null && _backgroundMode          != null) _backgroundMode.SettingChanged          -= _bgChangedHandler;
         }
 
         private static string FormatScale(int pct) => "List UI scale: " + pct + "%";

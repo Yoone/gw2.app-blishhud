@@ -21,8 +21,8 @@ namespace GW2app
         // honored on the round-trip back, so adding "(default)" doesn't break selection.
         public enum BackgroundMode
         {
-            [Description("Dark (default)")] Dark,
-            [Description("Game texture")]   GameTexture,
+            [Description("Dark")]                   Dark,
+            [Description("Game texture (default)")] GameTexture,
         }
 
         private const int GameTextureAssetId = 155997;
@@ -53,7 +53,7 @@ namespace GW2app
         private string _customTitle = "";
         private string _customSubtitle = "";
 
-        public GW2appWindow(int width, int height, BackgroundMode bgMode = BackgroundMode.Dark, bool compactTitle = false)
+        public GW2appWindow(int width, int height, BackgroundMode bgMode = BackgroundMode.GameTexture, bool compactTitle = false)
         {
             _bgMode = bgMode;
             _width = width;

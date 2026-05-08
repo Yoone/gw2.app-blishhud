@@ -53,7 +53,7 @@ namespace GW2app
 
         private void BuildInfoWindow()
         {
-            _infoWindow = new GW2appWindow(430, 460, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.Dark)
+            _infoWindow = new GW2appWindow(430, 460, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.GameTexture)
             {
                 Parent = GameService.Graphics.SpriteScreen,
                 Title = "Connect GW2.app",
@@ -309,13 +309,18 @@ namespace GW2app
 
             bool compact = UiScale < 1.0f;
             int initialWidth = WindowWidthFor(list);
-            var window = new GW2appWindow(initialWidth, WindowMaxHeight, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.Dark, compactTitle: compact)
+            var window = new GW2appWindow(initialWidth, WindowMaxHeight, _backgroundMode?.Value ?? GW2appWindow.BackgroundMode.GameTexture, compactTitle: compact)
             {
                 Parent = GameService.Graphics.SpriteScreen,
                 Title = TitleFor(list),
                 Subtitle = SubtitleFor(list),
                 Location = new Point(300, 300),
                 SavesPosition = true,
+                // Vertical-only resize via the bottom-right handle. Width is locked by
+                // GW2appWindow.HandleWindowResize. SavesSize persists the user's height
+                // across sessions (Blish writes once on mouse release).
+                CanResize = true,
+                SavesSize = true,
                 Id = $"{nameof(GW2app)}_List_{listId}",
             };
             window.SetEmblemTinted(_cornerSourceTexture, EmblemTintFor(list), UiScale);
@@ -330,7 +335,21 @@ namespace GW2app
                 Parent = window,
             };
 
-            var entry = new ListWindowEntry { Window = window, Panel = panel, ListId = listId };
+            // Footer panel sits below the main panel. Initially zero-height; sized by
+            // ResizePanelToWindow when entry.FooterReserve > 0 (e.g. list has chat_links).
+            var footerPanel = new Panel()
+            {
+                Location = new Point(0, window.ContentRegion.Height),
+                Size = new Point(window.ContentRegion.Width, 0),
+                Parent = window,
+            };
+
+            var entry = new ListWindowEntry { Window = window, Panel = panel, FooterPanel = footerPanel, ListId = listId };
+
+            // Single hook: GW2appWindow.LayoutRefreshed fires after every recalc
+            // (constructor, SetWindowHeight, SetWindowSize, user drag, bg-mode change,
+            // game-texture async swap), so panel + scrollbar stay in sync from one place.
+            window.LayoutRefreshed += (s, e) => ResizePanelToWindow(entry);
 
             EventHandler<EventArgs> onHidden = (s, e) =>
             {
@@ -442,6 +461,11 @@ namespace GW2app
 
             foreach (var child in entry.Panel.Children.ToList())
                 child.Dispose();
+            if (entry.FooterPanel != null)
+                foreach (var child in entry.FooterPanel.Children.ToList())
+                    child.Dispose();
+            entry.FooterReserve = 0;
+            entry.RerenderCopyChunks = null;
 
             // Show a centered spinner while we wait for the initial bulk transfer (synced).
             if (_loadingLists.Contains(listId))
@@ -449,6 +473,7 @@ namespace GW2app
                 // Disable scrolling during loading so a stray scrollbar can't appear in
                 // compact mode where the panel is short.
                 entry.Panel.CanScroll = false;
+                _copyModeListIds.Remove(listId);
                 ResizeWindowAndPanel(entry, WindowBaseHeight);
                 int spinnerSize = (int)Math.Round(64 * UiScale);
                 int sx = Math.Max(0, (entry.Panel.Width - spinnerSize) / 2);
@@ -470,6 +495,7 @@ namespace GW2app
             if (total == 0)
             {
                 entry.Panel.CanScroll = false;
+                _copyModeListIds.Remove(listId);
                 ResizeWindowAndPanel(entry, WindowBaseHeight);
                 new Label()
                 {
@@ -482,6 +508,35 @@ namespace GW2app
                     VerticalAlignment = VerticalAlignment.Middle,
                     Parent = entry.Panel,
                 };
+                return;
+            }
+
+            // Collect chat_links for this list (entry order, only non-empty).
+            var chatLinks = new List<string>();
+            for (int i = 0; i < total; i++)
+            {
+                if (_entryChatLinks.TryGetValue(EntryKey(listId, i), out var cl) && !string.IsNullOrEmpty(cl))
+                    chatLinks.Add(cl);
+            }
+            bool footerEnabled = ShowCopyWaypointsButton;
+            bool hasChatLinks = chatLinks.Count > 0;
+            bool inCopyMode = hasChatLinks && footerEnabled && _copyModeListIds.Contains(listId);
+            if (!hasChatLinks || !footerEnabled) _copyModeListIds.Remove(listId);
+
+            // Reserve footer space when there's a footer button to render.
+            if (hasChatLinks && footerEnabled)
+            {
+                entry.FooterReserve = FooterReserveTotal;
+                RenderFooter(entry, listId, chatLinks.Count, inCopyMode);
+            }
+
+            if (inCopyMode)
+            {
+                int copyContentHeight = RenderCopyMode(entry, listId, chatLinks);
+                int copyTarget = copyContentHeight + WindowVerticalChrome + entry.FooterReserve;
+                copyTarget = Math.Min(WindowMaxHeight, Math.Max(WindowBaseHeight, copyTarget));
+                entry.Window.MaxAllowedHeight = Math.Min(GW2appWindow.MaxResizeHeight, copyTarget);
+                ResizeWindowAndPanel(entry, copyTarget);
                 return;
             }
 
@@ -573,9 +628,19 @@ namespace GW2app
             if (entry.Window.Size.X != desiredWidth)
                 entry.Window.SetWindowSize(desiredWidth, entry.Window.Size.Y);
 
-            // Resize the window to fit content (clamped between base and max).
+            // Auto-fit (default rendered height) caps at WindowMaxHeight; the user-drag
+            // cap is separate (min(content+chrome, MaxResizeHeight)) so users can grow
+            // the window past the default but never beyond actual content or 1200.
             int contentHeight = y + ImagesBottomMargin;
-            int targetHeight = Math.Min(WindowMaxHeight, Math.Max(WindowBaseHeight, contentHeight + WindowVerticalChrome));
+            int contentBased = contentHeight + WindowVerticalChrome + entry.FooterReserve;
+            int fitHeight = Math.Min(WindowMaxHeight, Math.Max(WindowBaseHeight, contentBased));
+            int dragCap   = Math.Min(GW2appWindow.MaxResizeHeight, Math.Max(WindowBaseHeight, contentBased));
+            entry.Window.MaxAllowedHeight = dragCap;
+
+            // Honor the user's manual height (capped at content) across re-renders.
+            int targetHeight = entry.Window.UserPreferredHeight.HasValue
+                ? Math.Min(entry.Window.UserPreferredHeight.Value, dragCap)
+                : fitHeight;
             ResizeWindowAndPanel(entry, targetHeight);
         }
 
@@ -700,20 +765,233 @@ namespace GW2app
         private static readonly FieldInfo _labelBaseFontField =
             typeof(LabelBase).GetField("_font", BindingFlags.NonPublic | BindingFlags.Instance);
 
-        // Resize the window AND keep the inner panel in sync. WindowBase2 doesn't
-        // automatically resize its children when its content region changes.
+        // (Removed CenterButtonText reflection helper — StandardButton already places
+        // text at width/2 - textWidth/2 with Left alignment, which IS visually centered.
+        // Setting Center put text in the right half of those bounds, skewing right.)
+
+        // Resize the window. The panel is auto-synced via the window's LayoutRefreshed
+        // event (subscribed once in OpenListWindow), so we only need to nudge the
+        // panel here when SetWindowHeight short-circuited (newHeight == current).
         private static void ResizeWindowAndPanel(ListWindowEntry entry, int newHeight)
         {
             entry.Window.SetWindowHeight(newHeight);
-            if (entry.Panel == null) return;
+            ResizePanelToWindow(entry);
+        }
 
-            entry.Panel.Size = new Point(entry.Window.ContentRegion.Width, entry.Window.ContentRegion.Height);
+        // Sync the panel's size + scrollbar to the window's current content region,
+        // reserving FooterReserve px below for the footer panel.
+        // Wired to GW2appWindow.LayoutRefreshed so user drags update the panel live.
+        private static void ResizePanelToWindow(ListWindowEntry entry)
+        {
+            if (entry.Panel == null) return;
+            int fullW = entry.Window.ContentRegion.Width;
+            int fullH = entry.Window.ContentRegion.Height;
+            int footer = Math.Max(0, entry.FooterReserve);
+            int panelH = Math.Max(0, fullH - footer);
+
+            entry.Panel.Size = new Point(fullW, panelH);
             entry.Panel.RecalculateLayout();
 
             if (_panelScrollbarField?.GetValue(entry.Panel) is Scrollbar sb)
                 sb.Height = entry.Panel.ContentRegion.Height - 20;
+
+            if (entry.FooterPanel != null)
+            {
+                entry.FooterPanel.Location = new Point(0, panelH);
+                entry.FooterPanel.Size = new Point(fullW, footer);
+            }
         }
 
+        // ---- Footer + waypoint copy mode ----
+
+        // Negative top margin lets the button sit slightly above the footer-panel top
+        // (overflows into the main panel area) so the visual bottom-of-window gap below
+        // the button stays the same while the whole footer reserve shrinks. Adjust to
+        // tune button-to-window-bottom spacing.
+        private const int FooterTopMargin   = -1; // was 1, -2 more to bump button up
+        private const int FooterButtonH     = 26;
+        private const int FooterReserveTotal = FooterTopMargin + FooterButtonH;
+
+        private void RenderFooter(ListWindowEntry entry, string listId, int chatLinkCount, bool inCopyMode)
+        {
+            if (entry.FooterPanel == null) return;
+
+            string text = inCopyMode ? "Back" : "Copy waypoints";
+            int btnW = (int)Math.Round(180 * UiScale);
+            int btnH = FooterButtonH;
+            // Center horizontally within the footer panel.
+            int btnX = Math.Max(0, (entry.FooterPanel.Width - btnW) / 2);
+            int btnY = FooterTopMargin;
+
+            var btn = new StandardButton()
+            {
+                Text     = text,
+                Width    = btnW,
+                Height   = btnH,
+                Location = new Point(btnX, btnY),
+                Parent   = entry.FooterPanel,
+            };
+            if (UiScale < 1.0f && _labelBaseFontField != null)
+            {
+                try { _labelBaseFontField.SetValue(btn, GameService.Content.DefaultFont12); } catch { }
+            }
+
+            var capturedListId = listId;
+            btn.Click += (s, e) =>
+            {
+                if (_copyModeListIds.Contains(capturedListId))
+                    _copyModeListIds.Remove(capturedListId);
+                else
+                    _copyModeListIds.Add(capturedListId);
+                RefreshListWindow(capturedListId);
+            };
+        }
+
+        // Lays out the copy-waypoints panel: slider + chunk buttons. Returns the
+        // rendered content height (used by the caller to size the window).
+        // Stores entry.RerenderCopyChunks so the slider's ValueChanged can update only
+        // the chunk buttons (leaving the slider alive — disposing it mid-drag dead-ends
+        // the user's interaction).
+        private int RenderCopyMode(ListWindowEntry entry, string listId, List<string> chatLinks)
+        {
+            entry.Panel.CanScroll = true;
+
+            int max = (_maxWaypointsPerCopy?.Value ?? GW2app.MaxWaypointsPerMessage);
+            max = Math.Max(1, Math.Min(GW2app.MaxWaypointsPerMessage, max));
+
+            const int leftPad = 8;
+            int innerWidth = Math.Max(0, entry.Panel.Width - leftPad - 16); // small right inset
+            const int chunkH = 30;
+            const int chunkGap = 4;
+            int y = ImagesTopMargin;
+
+            // Header row: "Max waypoints per message: 8" / "Max"
+            var headerLabel = new Label()
+            {
+                Text          = LabelForMaxWaypoints(max),
+                Font          = GameService.Content.DefaultFont14,
+                TextColor     = Color.LightGray,
+                AutoSizeWidth = true,
+                Location      = new Point(leftPad, y),
+                Parent        = entry.Panel,
+            };
+            y += 18;
+
+            // Slider 1..15.
+            var slider = new TrackBar()
+            {
+                MinValue  = 1,
+                MaxValue  = GW2app.MaxWaypointsPerMessage,
+                Value     = max,
+                SmallStep = true,
+                Width     = innerWidth,
+                Height    = 16,
+                Location  = new Point(leftPad, y),
+                Parent    = entry.Panel,
+            };
+            y += 22;
+            int chunksStartY = y;
+
+            // Track chunk buttons so the re-render delegate can dispose only those.
+            var chunkButtons = new List<StandardButton>();
+
+            // Render chunks at the current max. Returns the total content height
+            // including ImagesBottomMargin so callers can size the window.
+            int RenderChunks(int currentMax)
+            {
+                foreach (var b in chunkButtons) try { b.Dispose(); } catch { }
+                chunkButtons.Clear();
+
+                int yy = chunksStartY;
+                int idx = 1;
+                foreach (var chunk in ChunkChatLinks(chatLinks, currentMax))
+                {
+                    string codes = string.Join(" ", chunk);
+                    string label = "Copy group " + idx + " (" + chunk.Count + ")";
+                    var chunkBtn = new StandardButton()
+                    {
+                        Text     = label,
+                        Width    = innerWidth,
+                        Height   = chunkH,
+                        Location = new Point(leftPad, yy),
+                        Parent   = entry.Panel,
+                    };
+                    if (UiScale < 1.0f && _labelBaseFontField != null)
+                    {
+                        try { _labelBaseFontField.SetValue(chunkBtn, GameService.Content.DefaultFont12); } catch { }
+                    }
+                    var capturedCodes = codes;
+                    chunkBtn.Click += (s, e) => CopyChatLinkToClipboard(capturedCodes);
+                    chunkButtons.Add(chunkBtn);
+                    yy += chunkH + chunkGap;
+                    idx++;
+                }
+                return yy + ImagesBottomMargin;
+            }
+
+            int contentHeight = RenderChunks(max);
+
+            // Re-render delegate: invoked from slider.ValueChanged. Updates the header
+            // text, replaces only the chunk buttons, and resizes the window to fit.
+            entry.RerenderCopyChunks = () =>
+            {
+                int v = (_maxWaypointsPerCopy?.Value ?? GW2app.MaxWaypointsPerMessage);
+                v = Math.Max(1, Math.Min(GW2app.MaxWaypointsPerMessage, v));
+                headerLabel.Text = LabelForMaxWaypoints(v);
+                int newContentH = RenderChunks(v);
+                int target = newContentH + WindowVerticalChrome + entry.FooterReserve;
+                target = Math.Min(WindowMaxHeight, Math.Max(WindowBaseHeight, target));
+                entry.Window.MaxAllowedHeight = Math.Min(GW2appWindow.MaxResizeHeight, target);
+                ResizeWindowAndPanel(entry, target);
+            };
+
+            slider.ValueChanged += (s, e) =>
+            {
+                int v = Math.Max(1, Math.Min(GW2app.MaxWaypointsPerMessage, (int)Math.Round(e.Value)));
+                if (_maxWaypointsPerCopy != null && _maxWaypointsPerCopy.Value != v)
+                    _maxWaypointsPerCopy.Value = v;
+                entry.RerenderCopyChunks?.Invoke();
+            };
+
+            return contentHeight;
+        }
+
+        private static string LabelForMaxWaypoints(int max) =>
+            "Max waypoints per message: " + (max == GW2app.MaxWaypointsPerMessage ? "Max" : max.ToString());
+
+        // Mirrors ui/src/lib/components/locations/copy-locations.svelte:chunkLocations.
+        // At maxPerMsg == MaxWaypointsPerMessage (15): chunk by GW2_CHAT_MAX_LENGTH chars.
+        // Otherwise: chunk by entry count.
+        private static List<List<string>> ChunkChatLinks(List<string> links, int maxPerMsg)
+        {
+            var result = new List<List<string>>();
+            if (links == null || links.Count == 0) return result;
+
+            var current = new List<string>();
+            string currentJoined = "";
+            foreach (var link in links)
+            {
+                string sep = currentJoined.Length > 0 ? " " : "";
+                string test = currentJoined + sep + link;
+                bool maxReached = maxPerMsg == GW2app.MaxWaypointsPerMessage
+                    ? test.Length > GW2app.Gw2ChatMaxLength
+                    : current.Count >= maxPerMsg;
+
+                if (!maxReached)
+                {
+                    current.Add(link);
+                    currentJoined = test;
+                }
+                else
+                {
+                    if (current.Count > 0) result.Add(current);
+                    current = new List<string> { link };
+                    currentJoined = link;
+                }
+            }
+            if (current.Count > 0) result.Add(current);
+            return result;
+        }
 
         // Base character budgets at UiScale = 1.0. Lists with reset=NEVER get a more
         // generous limit since the right side of the title bar is empty (no countdown

@@ -53,7 +53,7 @@ namespace GW2app
             var appearance = settings.AddSubCollection("appearance", true, () => "Appearance");
             _backgroundMode = appearance.DefineSetting(
                 "windowStyle",
-                GW2appWindow.BackgroundMode.Dark,
+                GW2appWindow.BackgroundMode.GameTexture,
                 () => "Window background",
                 () => "Changes the background of windows");
             _showAccountName = appearance.DefineSetting(
@@ -61,6 +61,11 @@ namespace GW2app
                 true,
                 () => "Show GW2 account name in list header",
                 () => "Hides the account-name subtitle on the list windows when off.");
+            _showCopyWaypointsButton = appearance.DefineSetting(
+                "showCopyWaypointsButton",
+                true,
+                () => "Show \"Copy waypoints\" button in lists",
+                () => "Hides the bottom-of-list button used to copy chat-link waypoints.");
 
             // Integer percentage so the slider snaps to whole percent values. Setting key
             // bumped from "uiScale" because the type changed (float -> int) and old
@@ -75,7 +80,15 @@ namespace GW2app
 
             var internalSettings = settings.AddSubCollection("internal");
             _persistedOpenListsJson = internalSettings.DefineSetting("openLists", "[]");
+            // Hidden setting: max waypoints per chat-link copy chunk. 1-15. At 15
+            // (MaxWaypointsPerMessage) the chunker switches to character-count mode
+            // (<= GW2ChatMaxLength = 199 per chunk). Mirrors the website.
+            _maxWaypointsPerCopy = internalSettings.DefineSetting("maxWaypointsPerCopy", MaxWaypointsPerMessage);
         }
+
+        // GW2 chat input character limit and "max" position on the slider.
+        internal const int Gw2ChatMaxLength = 199;
+        internal const int MaxWaypointsPerMessage = 15;
 
         // Custom view that wraps Blish's auto-generated SettingsView and appends a
         // "Reset scale to 100%" button after the slider. The slider is defined last in
@@ -85,12 +98,14 @@ namespace GW2app
             return new GW2appSettingsView(
                 _backgroundMode,
                 _showAccountName,
+                _showCopyWaypointsButton,
                 _uiScalePct,
                 onResetScale: () => { if (_uiScalePct != null) _uiScalePct.Value = 100; });
         }
 
         private float UiScale => (_uiScalePct?.Value ?? 100) / 100f;
         private bool ShowAccountName => _showAccountName?.Value ?? true;
+        private bool ShowCopyWaypointsButton => _showCopyWaypointsButton?.Value ?? true;
 
         protected override async Task LoadAsync()
         {
@@ -112,6 +127,8 @@ namespace GW2app
                 _uiScalePct.SettingChanged += OnUiScaleChanged;
             if (_showAccountName != null)
                 _showAccountName.SettingChanged += OnShowAccountNameChanged;
+            if (_showCopyWaypointsButton != null)
+                _showCopyWaypointsButton.SettingChanged += OnShowCopyWaypointsButtonChanged;
 
             StartHttpServer();
 
@@ -160,6 +177,16 @@ namespace GW2app
                 if (list == null) continue;
                 kvp.Value.Window.Subtitle = SubtitleFor(list);
             }
+        }
+
+        // Footer button visibility / copy-mode entry depends on this setting.
+        // Force re-render of every open list so it appears or disappears immediately.
+        private void OnShowCopyWaypointsButtonChanged(object sender, ValueChangedEventArgs<bool> e)
+        {
+            // If turning off mid-copy-mode, exit copy mode for all lists first.
+            if (!e.NewValue) _copyModeListIds.Clear();
+            foreach (var id in _listWindows.Keys.ToList())
+                RefreshListWindow(id);
         }
 
         protected override void Update(GameTime gameTime)
@@ -237,6 +264,15 @@ namespace GW2app
 
             foreach (var listId in dirtyLists)
                 RefreshListWindow(listId);
+
+            // Deferred UI-initiated refreshes (e.g. slider drag inside the copy-mode
+            // panel). Processed here so the firing control isn't disposed mid-event.
+            if (_deferredRefreshes.Count > 0)
+            {
+                foreach (var listId in _deferredRefreshes.ToList())
+                    RefreshListWindow(listId);
+                _deferredRefreshes.Clear();
+            }
         }
 
         private bool ApplyState(StateMessage state, HashSet<string> dirtyLists)
@@ -379,6 +415,7 @@ namespace GW2app
             _entryChatLinks.Clear();
             _pendingEntries.Clear();
             _loadingLists.Clear();
+            _copyModeListIds.Clear();
             _lastSubscribedIds = new HashSet<string>();
             _restoredFromPersistence = false;
             if (dropCatalog) _catalog = null;
@@ -395,6 +432,8 @@ namespace GW2app
                 _uiScalePct.SettingChanged -= OnUiScaleChanged;
             if (_showAccountName != null)
                 _showAccountName.SettingChanged -= OnShowAccountNameChanged;
+            if (_showCopyWaypointsButton != null)
+                _showCopyWaypointsButton.SettingChanged -= OnShowCopyWaypointsButtonChanged;
 
             try { _httpCts?.Cancel(); } catch { }
             try { _httpListener?.Stop(); } catch { }
@@ -488,9 +527,17 @@ namespace GW2app
         private bool _restoredFromPersistence;
         private bool _unloading;
         private SettingEntry<string> _persistedOpenListsJson;
+        private SettingEntry<int> _maxWaypointsPerCopy;
+        // List ids currently in "copy waypoints" mode (panel shows slider + chunks).
+        private readonly HashSet<string> _copyModeListIds = new HashSet<string>();
+        // Lists scheduled for refresh on the next Update tick. Used to defer refreshes
+        // out of UI event handlers (e.g. slider ValueChanged) so we don't dispose the
+        // very control that fired the event.
+        private readonly HashSet<string> _deferredRefreshes = new HashSet<string>();
         private SettingEntry<GW2appWindow.BackgroundMode> _backgroundMode;
         private SettingEntry<int> _uiScalePct;
         private SettingEntry<bool> _showAccountName;
+        private SettingEntry<bool> _showCopyWaypointsButton;
 
         private readonly ConcurrentQueue<IncomingMessage> _incomingMessages = new ConcurrentQueue<IncomingMessage>();
     }

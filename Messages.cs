@@ -11,6 +11,15 @@ namespace GW2app
         public string ListId;
         public GW2appWindow Window;
         public Panel Panel;
+        // Footer area below the main panel (action button: "Copy waypoints" / "Back").
+        public Panel FooterPanel;
+        // Vertical space (px) reserved below the main panel for the footer.
+        // 0 when no footer is shown.
+        public int FooterReserve;
+        // While the panel is in copy-waypoints mode, this re-renders only the chunk
+        // buttons (leaving the slider alive so the user's drag doesn't dead-end).
+        // Null otherwise.
+        public System.Action RerenderCopyChunks;
     }
 
     // Fields are assigned via Newtonsoft.Json reflection; suppress "never assigned" warnings.
