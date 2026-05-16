@@ -71,6 +71,9 @@ namespace GW2app
         [JsonProperty("mime")] public string Mime;
         [JsonProperty("image_b64")] public string ImageB64;
         [JsonProperty("chat_link")] public string ChatLink;
+        // External URL attached to a custom entry (e.g. wiki page, guide). Currently
+        // only sent for entry_type === "custom". Opened in the user's default browser.
+        [JsonProperty("link")] public string Link;
     }
 
     internal class SubscribeMessage

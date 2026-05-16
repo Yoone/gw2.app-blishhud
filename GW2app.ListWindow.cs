@@ -467,29 +467,52 @@ namespace GW2app
             entry.FooterReserve = 0;
             entry.RerenderCopyChunks = null;
 
-            // Show a centered spinner while we wait for the initial bulk transfer (synced).
-            if (_loadingLists.Contains(listId))
+            // Reset to resizable; the loading / failed branches turn this off again
+            // since the window is sized to fit a fixed-height view in those states.
+            entry.Window.CanResize = true;
+
+            // Resolve the list early so loading-progress can show "X / Y".
+            var list = _catalog?.Lists?.FirstOrDefault(l => l.Id == listId);
+
+            // Failed: timed out waiting for `synced`. Show error + Retry.
+            if (_loadingFailures.Contains(listId))
             {
-                // Disable scrolling during loading so a stray scrollbar can't appear in
-                // compact mode where the panel is short.
                 entry.Panel.CanScroll = false;
                 _copyModeListIds.Remove(listId);
-                ResizeWindowAndPanel(entry, WindowBaseHeight);
-                int spinnerSize = (int)Math.Round(64 * UiScale);
-                int sx = Math.Max(0, (entry.Panel.Width - spinnerSize) / 2);
-                int sy = Math.Max(0, (entry.Panel.Height - spinnerSize) / 2);
-                new LoadingSpinner()
-                {
-                    Location = new Point(sx, sy),
-                    Size = new Point(spinnerSize, spinnerSize),
-                    Parent = entry.Panel,
-                };
+                RenderLoadingFailed(entry, listId);
                 return;
             }
 
-            var list = _catalog?.Lists?.FirstOrDefault(l => l.Id == listId);
-            if (list == null) return;
+            // Loading: spinner + "Loading X / Y" below.
+            if (_loadingLists.Contains(listId))
+            {
+                int totalForLoading = list?.Entries?.Count ?? 0;
+                int loadedCount = 0;
+                if (totalForLoading > 0)
+                {
+                    for (int i = 0; i < totalForLoading; i++)
+                        if (_entryImages.ContainsKey(EntryKey(listId, i))) loadedCount++;
+                }
 
+                // Defensive: every image is cached but `synced` never arrived. Bail out
+                // of loading state and render entries normally. The PruneImagesAfterSynced
+                // step is a no-op when entry count is unchanged, so this is safe.
+                if (totalForLoading > 0 && loadedCount >= totalForLoading)
+                {
+                    Logger.Info($"All {totalForLoading} images cached for list {listId} but no `synced` received; auto-clearing loading state.");
+                    MarkLoaded(listId);
+                    // fall through to entries rendering
+                }
+                else
+                {
+                    entry.Panel.CanScroll = false;
+                    _copyModeListIds.Remove(listId);
+                    RenderLoadingProgress(entry, loadedCount, totalForLoading);
+                    return;
+                }
+            }
+
+            if (list == null) return;
             int total = list.Entries?.Count ?? 0;
 
             if (total == 0)
@@ -696,6 +719,12 @@ namespace GW2app
                 var capturedLink = chatLink;
                 image.Click += (s, e) => CopyChatLinkToClipboard(capturedLink);
             }
+            else if (_entryLinks.TryGetValue(key, out var url) && !string.IsNullOrEmpty(url))
+            {
+                image.BasicTooltipText = "Click to open " + url;
+                var capturedUrl = url;
+                image.Click += (s, e) => OpenUrlInBrowser(capturedUrl);
+            }
 
             if (isPending)
             {
@@ -814,6 +843,115 @@ namespace GW2app
         // values let it sit slightly above the panel's top edge.
         private const int FooterTopMargin   = -4;
         private int FooterReserveTotal      => FooterTopMargin + ActionButtonHeight;
+
+        // ---- Loading / failure UIs ----
+        //
+        // Both views anchor their content to the panel's top with LoadingTopPad of
+        // breathing room, then leave LoadingBottomPad below the last element. Window
+        // height is derived from the actual content so the layout has no implicit
+        // padding via vertical centering.
+        private const int LoadingTopPad     = 10;
+        private const int LoadingBottomPad  = 20;
+        private const int LoadingTextGap    = 0;  // gap between spinner and text
+        private const int FailedTextHeight  = 18;
+        private const int FailedButtonGap   = 8;
+
+        private void RenderLoadingProgress(ListWindowEntry entry, int loadedCount, int total)
+        {
+            int spinnerSize = (int)Math.Round(64 * UiScale);
+            int contentHeight = LoadingTopPad + spinnerSize + LoadingTextGap + FailedTextHeight + LoadingBottomPad;
+            int windowHeight = contentHeight + WindowVerticalChrome;
+            entry.Window.CanResize = false;
+            entry.Window.MaxAllowedHeight = windowHeight;
+            ResizeWindowAndPanel(entry, windowHeight);
+
+            int sx = Math.Max(0, (entry.Panel.Width - spinnerSize) / 2);
+            new LoadingSpinner()
+            {
+                Location = new Point(sx, LoadingTopPad),
+                Size = new Point(spinnerSize, spinnerSize),
+                Parent = entry.Panel,
+            };
+
+            string text = total > 0 ? "Loading " + loadedCount + " / " + total : "Loading...";
+            new Label()
+            {
+                Text = text,
+                Font = GameService.Content.DefaultFont14,
+                TextColor = Color.LightGray,
+                Size = new Point(entry.Panel.Width, FailedTextHeight),
+                Location = new Point(0, LoadingTopPad + spinnerSize + LoadingTextGap),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Middle,
+                Parent = entry.Panel,
+            };
+        }
+
+        // "Failed to load list" in red + a Retry button below it.
+        private void RenderLoadingFailed(ListWindowEntry entry, string listId)
+        {
+            int btnW = ActionButtonWidth;
+            int btnH = ActionButtonHeight;
+            int contentHeight = LoadingTopPad + FailedTextHeight + FailedButtonGap + btnH + LoadingBottomPad;
+            int windowHeight = contentHeight + WindowVerticalChrome;
+            entry.Window.CanResize = false;
+            entry.Window.MaxAllowedHeight = windowHeight;
+            ResizeWindowAndPanel(entry, windowHeight);
+
+            new Label()
+            {
+                Text = "Failed to load list",
+                Font = GameService.Content.DefaultFont14,
+                TextColor = Color.Red,
+                Size = new Point(entry.Panel.Width, FailedTextHeight),
+                Location = new Point(0, LoadingTopPad),
+                HorizontalAlignment = HorizontalAlignment.Center,
+                VerticalAlignment = VerticalAlignment.Middle,
+                Parent = entry.Panel,
+            };
+
+            int btnX = Math.Max(0, (entry.Panel.ContentRegion.Width - btnW) / 2);
+            int btnY = LoadingTopPad + FailedTextHeight + FailedButtonGap;
+            var capturedListId = listId;
+            ActionButton.Create(
+                entry.Panel, "Retry", new Point(btnX, btnY), btnW, btnH,
+                UiScale, CurrentTheme,
+                onClick: () => RetryLoadList(capturedListId));
+        }
+
+        // Resub trick: send a subscribe without listId, then a normal subscribe with it.
+        // Server treats the second one as "newly subscribed" and re-streams imagery +
+        // sends `synced`. No protocol change required.
+        private void RetryLoadList(string listId)
+        {
+            // Reset local state for this list.
+            _loadingFailures.Remove(listId);
+            _pendingEntries.RemoveWhere(k => k.StartsWith(listId + ":"));
+            // Drop any partial imagery we have so the new stream replaces fresh.
+            var prefix = listId + ":";
+            var toRemove = _entryImages.Keys.Where(k => k.StartsWith(prefix)).ToList();
+            foreach (var k in toRemove)
+            {
+                if (_entryImages.TryGetValue(k, out var tex)) try { tex?.Dispose(); } catch { }
+                _entryImages.Remove(k);
+            }
+            MarkLoading(listId);
+
+            // Step 1: send subscribe excluding listId so server drops it.
+            if (_lastSubscribedIds.Contains(listId))
+            {
+                var without = new HashSet<string>(_lastSubscribedIds);
+                without.Remove(listId);
+                _ = SendSubscribeAsync(without.ToList());
+                _lastSubscribedIds = without;
+            }
+            // Step 2: re-add and send. Server sees this as a fresh subscription -> re-stream.
+            var withAgain = new HashSet<string>(_lastSubscribedIds) { listId };
+            _ = SendSubscribeAsync(withAgain.ToList());
+            _lastSubscribedIds = withAgain;
+
+            RefreshListWindow(listId);
+        }
 
         private void RenderFooter(ListWindowEntry entry, string listId, int chatLinkCount, bool inCopyMode)
         {
@@ -1209,13 +1347,13 @@ namespace GW2app
             foreach (var id in subs)
             {
                 if (!_lastSubscribedIds.Contains(id))
-                    _loadingLists.Add(id);
+                    MarkLoading(id);
             }
             // Lists leaving the sub set are no longer loading.
             foreach (var id in _lastSubscribedIds)
             {
                 if (!subs.Contains(id))
-                    _loadingLists.Remove(id);
+                    MarkLoaded(id);
             }
 
             _lastSubscribedIds = subs;
@@ -1333,6 +1471,24 @@ namespace GW2app
             catch (Exception e)
             {
                 Logger.Warn($"Failed to copy chat link: {e.Message}");
+            }
+        }
+
+        // Open an external URL in the user's default browser. Used for custom-entry `link`
+        // values; the website restricts these to http(s) at submit time.
+        private void OpenUrlInBrowser(string url)
+        {
+            if (string.IsNullOrEmpty(url)) return;
+            try
+            {
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
+                {
+                    UseShellExecute = true,
+                });
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"Failed to open URL '{url}': {e.Message}");
             }
         }
 

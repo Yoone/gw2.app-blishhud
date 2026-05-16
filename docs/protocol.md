@@ -90,9 +90,10 @@ image changed (or this is part of a bulk re-image). For unsubscribed lists,
   "index": 3,
   "completed": true,
   "autoCompleted": false,
-  "mime": "image/jpeg",          // optional
-  "image_b64": "...",            // optional
-  "chat_link": "[&BAgIAAA=]"     // optional
+  "mime": "image/jpeg",                       // optional
+  "image_b64": "...",                         // optional
+  "chat_link": "[&BAgIAAA=]",                 // optional
+  "link": "https://wiki.guildwars2.com/..."   // optional
 }
 ```
 
@@ -104,6 +105,12 @@ code, etc.). Opaque to the server, pasted into game chat verbatim. May be
 absent (nothing to copy) or contain multiple codes separated by spaces
 (e.g. PSNA waypoints). Per-field deduped: an `entry` is only emitted when
 `chat_link` (or any other field) changes.
+
+`link` is an external URL the user attached to a custom entry (e.g. a
+wiki page, a guide, a video). Currently emitted only for entries with
+`entry_type === "custom"`. Treat as an `http(s)://` URL to open in the
+user's default browser when the in-game module exposes a "go to source"
+affordance. Per-field deduped like `chat_link`.
 
 #### `synced`: end of bulk re-image
 

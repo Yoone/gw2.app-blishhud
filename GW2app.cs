@@ -219,7 +219,8 @@ namespace GW2app
                             foreach (var id in msg.SyncedListIds ?? new List<string>())
                             {
                                 PruneImagesAfterSynced(id);
-                                bool wasLoading = _loadingLists.Remove(id);
+                                bool wasLoading = _loadingLists.Contains(id);
+                                MarkLoaded(id);
                                 Logger.Info($"Synced: cleared loading={wasLoading} for {id}");
                                 dirtyLists.Add(id);
                             }
@@ -268,6 +269,24 @@ namespace GW2app
                     dirtyLists.Add(id);
             }
 
+            // Loading-timeout sweep. Lists that have been waiting > LoadingTimeoutSeconds
+            // without a `synced` flip to the failed state and surface a Retry button.
+            if (_loadingLists.Count > 0)
+            {
+                var nowUtc = DateTime.UtcNow;
+                foreach (var listId in _loadingLists.ToList())
+                {
+                    if (_loadingFailures.Contains(listId)) continue;
+                    if (!_loadingStartTimes.TryGetValue(listId, out var start)) continue;
+                    if ((nowUtc - start).TotalSeconds > LoadingTimeoutSeconds)
+                    {
+                        _loadingFailures.Add(listId);
+                        Logger.Warn($"Loading timeout for list {listId} after {LoadingTimeoutSeconds}s; surfacing Retry.");
+                        dirtyLists.Add(listId);
+                    }
+                }
+            }
+
             foreach (var listId in dirtyLists)
                 RefreshListWindow(listId);
 
@@ -279,6 +298,7 @@ namespace GW2app
                     RefreshListWindow(listId);
                 _deferredRefreshes.Clear();
             }
+
         }
 
         private bool ApplyState(StateMessage state, HashSet<string> dirtyLists)
@@ -304,7 +324,9 @@ namespace GW2app
 
                 if (_lastSubscribedIds.Contains(list.Id) && EntriesChanged(oldCatalog, list.Id, list))
                 {
-                    if (_loadingLists.Add(list.Id))
+                    bool wasLoading = _loadingLists.Contains(list.Id);
+                    MarkLoading(list.Id);
+                    if (!wasLoading)
                         Logger.Info($"Loading: marked {list.Id} as loading (state changed)");
                 }
             }
@@ -351,6 +373,7 @@ namespace GW2app
                     tex?.Dispose();
                 _entryImages.Remove(key);
                 _entryChatLinks.Remove(key);
+                _entryLinks.Remove(key);
             }
         }
 
@@ -372,6 +395,11 @@ namespace GW2app
                 _entryChatLinks.Remove(chatKey);
             else
                 _entryChatLinks[chatKey] = entry.ChatLink;
+
+            if (string.IsNullOrEmpty(entry.Link))
+                _entryLinks.Remove(chatKey);
+            else
+                _entryLinks[chatKey] = entry.Link;
 
             if (!string.IsNullOrEmpty(entry.ImageB64))
             {
@@ -408,6 +436,22 @@ namespace GW2app
 
         private static string EntryKey(string listId, int index) => listId + ":" + index.ToString();
 
+        // Wraps _loadingLists mutations so the loading-start timestamps and failure
+        // markers stay in sync. Use these instead of mutating the sets directly.
+        private void MarkLoading(string listId)
+        {
+            _loadingLists.Add(listId);
+            _loadingStartTimes[listId] = DateTime.UtcNow;
+            _loadingFailures.Remove(listId);
+        }
+
+        private void MarkLoaded(string listId)
+        {
+            _loadingLists.Remove(listId);
+            _loadingStartTimes.Remove(listId);
+            _loadingFailures.Remove(listId);
+        }
+
         // Wipe all per-connection state. Called on disconnect (dropCatalog=true) and on
         // supersede by a new client (dropCatalog=false: keeps windows alive until the
         // new client's first `state` lands). Resetting _lastSubscribedIds is what causes
@@ -419,8 +463,11 @@ namespace GW2app
                 try { tex?.Dispose(); } catch { }
             _entryImages.Clear();
             _entryChatLinks.Clear();
+            _entryLinks.Clear();
             _pendingEntries.Clear();
             _loadingLists.Clear();
+            _loadingStartTimes.Clear();
+            _loadingFailures.Clear();
             _copyModeListIds.Clear();
             _lastSubscribedIds = new HashSet<string>();
             _restoredFromPersistence = false;
@@ -520,8 +567,18 @@ namespace GW2app
         private readonly Dictionary<string, Texture2D> _entryImages = new Dictionary<string, Texture2D>();
         // Chat-link strings per (listId, index). Opaque, copied to clipboard on entry-image click.
         private readonly Dictionary<string, string> _entryChatLinks = new Dictionary<string, string>();
+        // External URL per (listId, index), currently only set for custom entries. Opened
+        // in the default browser on entry-image click when no chat_link is present.
+        private readonly Dictionary<string, string> _entryLinks = new Dictionary<string, string>();
         private HashSet<string> _lastSubscribedIds = new HashSet<string>();
         private readonly HashSet<string> _loadingLists = new HashSet<string>();
+        // Per-list timestamp of when loading started; drives the timeout check.
+        private readonly Dictionary<string, DateTime> _loadingStartTimes = new Dictionary<string, DateTime>();
+        // List IDs whose loading exceeded LoadingTimeoutSeconds without a `synced`.
+        // RefreshListWindow renders the failed-state UI for these instead of the spinner.
+        private readonly HashSet<string> _loadingFailures = new HashSet<string>();
+        // Lists exceeding this without a `synced` are surfaced as "Failed to load" with a Retry button.
+        private const int LoadingTimeoutSeconds = 20;
         // Entry keys (EntryKey(listId, index)) we sent set_entry_completed for, awaiting
         // a fresh image from the website confirming the change. Cleared as soon as a new
         // image arrives (in ApplyEntry).
