@@ -42,13 +42,15 @@ a time. A new connection immediately closes any existing one with code
 
 ```
 List  = { id, name, settings (opaque JSON), entries: [Entry, ...], is_loot_bag?: bool }
-Entry = { completed: bool, autoCompleted: bool, entry_type?: string }
+Entry = { completed: bool, autoCompleted: bool, entry_type?: string, has_hover_card?: bool }
 ```
 
 Entries have **no stable ID**. They are addressed by `(listId, index)`
 within the latest `state`.
 
 `entry_type` is a short string identifying the kind of entry, mirroring the discriminator the website uses internally (e.g. `"item"`, `"timer"`, `"location"`, `"mapchest"`, `"recipe"`, `"dailypsna"`, `"tpdelivery"`, `"wv"`, `"custom"`, etc.). It exists so the module can mirror website-side per-type behaviour, e.g. an in-game "Copy waypoints" can include only entries with `entry_type === "location"` (those are the ones that may carry a Waypoint or POI `chat_link`) and `entry_type === "dailypsna"` (which carries multiple vendor waypoints in `chat_link`, space-separated).
+
+`has_hover_card` is set to `true` on entries that have an associated hovercard the module can request via `request_hover` (see below). Absent or `false` means the entry has no hovercard and the module should suppress any hover-related UX for that row.
 
 ### Loot Bag
 
@@ -90,12 +92,16 @@ image changed (or this is part of a bulk re-image). For unsubscribed lists,
   "index": 3,
   "completed": true,
   "autoCompleted": false,
+  "entry_type": "item",                       // optional
+  "has_hover_card": true,                     // optional, omitted when false
   "mime": "image/jpeg",                       // optional
   "image_b64": "...",                         // optional
   "chat_link": "[&BAgIAAA=]",                 // optional
   "link": "https://wiki.guildwars2.com/..."   // optional
 }
 ```
+
+`entry_type` mirrors the field of the same name in `state`'s `Entry` shape. `has_hover_card` is the same truthy-only flag as in `state`: present and `true` means "this row currently has a hovercard the module can `open_hover` for"; absent means "no hovercard, suppress hover UX for this row". When the website renders a row whose hovercard appears or disappears, it re-emits the `entry` with the field flipped accordingly.
 
 `mime` is `image/png` or `image/jpeg`, though the website currently only
 sends PNG. Decode failures are logged and the previous image is retained.
@@ -120,6 +126,37 @@ affordance. Per-field deduped like `chat_link`.
 
 The module dismisses the loading indicator and commits the new view in
 one frame.
+
+#### `hover_image`: hovercard PNG frame for the currently-open hover
+
+Streamed by the client while a hover subscription is open (see
+`open_hover` below). Carries the rendered hovercard image for the
+subscribed entry.
+
+```json
+{
+  "type": "hover_image",
+  "listId": "...",
+  "index": 3,
+  "mime": "image/png",
+  "image_b64": "..."
+}
+```
+
+- Only emitted while exactly one hover is open. Frames carrying
+  `(listId, index)` that don't match the currently-open subscription are
+  the result of a stale superseded capture and the server SHOULD ignore
+  them with `console.warn` (treat them as harmless leftovers, not a
+  protocol violation).
+- The client emits the first frame as soon as the hovercard's DOM has
+  rendered, and continues emitting whenever the rendered pixels change
+  (e.g. async data like TP prices land, animations advance), at the same
+  capture cadence used for row images. Identical consecutive frames are
+  not re-sent.
+- `mime` is `image/png` or `image/jpeg`, though the website currently
+  only sends PNG.
+- Stops when the server sends `close_hover`, or when a new `open_hover`
+  supersedes the current subscription.
 
 ### Server → Client
 
@@ -147,6 +184,36 @@ entry order), then sends `synced` listing those IDs.
 - Targets only the user-controlled `completed` flag. The server MUST NOT send this for entries whose `autoCompleted` is `true`; the client ignores such messages with `console.error`.
 - `(listId, index)` resolves against the client's most recent `state`. Unknown lists or out-of-range indices are ignored with `console.error`.
 - Idempotent: a no-op toggle is treated as such, so the server may resend to recover.
+
+#### `open_hover`: subscribe to streaming hovercard frames for an entry
+
+```json
+{ "type": "open_hover", "listId": "...", "index": 3 }
+```
+
+- Only valid for entries with `has_hover_card: true` in the latest `state`. Opening hover for an entry without it is a server bug; the client ignores with `console.error`.
+- `(listId, index)` resolves against the client's most recent `state`. Unknown lists or out-of-range indices are ignored with `console.error`.
+- **Last-writer-wins; one active subscription at a time.** A new `open_hover` implicitly closes any prior subscription. The client tears down the previous hovercard, mounts the new one, and starts streaming `hover_image` frames for the new entry. The server does not need to send `close_hover` before re-opening.
+- The client begins emitting `hover_image` frames as soon as the hovercard's DOM has rendered, and continues for as long as the subscription is open (see `hover_image` for cadence and dedup semantics). Hovercard content for entries that load asynchronously (e.g. TP prices) is allowed to update over the lifetime of the subscription; each update produces a new `hover_image` frame.
+
+#### `close_hover`: end the current hover subscription
+
+```json
+{ "type": "close_hover" }
+```
+
+- No `(listId, index)`: there is at most one active subscription, so the addressee is implicit.
+- The client unmounts the hovercard and stops emitting `hover_image` frames.
+- No-op if no subscription is open (client logs `console.warn` and ignores).
+
+**Lifecycle expectations and caching:**
+
+The subscription model puts the lifecycle in the server's hands. A typical flow is:
+- User hovers an entry in-game → server sends `open_hover`.
+- User leaves the entry → server sends `close_hover`.
+- User hovers a different entry → server sends `open_hover` for the new one (no intermediate `close_hover` needed).
+
+Because hovercard content can keep updating after the initial paint (TP prices, achievement progress, etc.), the server SHOULD treat `hover_image` as a live stream while the subscription is open and replace the displayed image on every new frame. After `close_hover` (or supersession), the server MAY keep the most recent `hover_image` PNG cached keyed by `(listId, index)` to display instantly the next time the user hovers the same entry, invalidating that cache when a new row `entry` with `image_b64` arrives for the same `(listId, index)` (the row image changing is the client's signal that underlying data changed).
 
 ## Close codes
 

@@ -279,7 +279,7 @@ namespace GW2app
                 {
                     var listId = list.Id;
                     var name = list.Name ?? list.Id;
-                    var label = string.IsNullOrEmpty(kvp.Key) ? name : "  " + name;
+                    var label = string.IsNullOrEmpty(kvp.Key) ? name : "   " + name;
                     var item = _contextMenuStrip.AddMenuItem(label);
                     item.Click += (s, e) => OpenListWindow(listId);
                     addedCount++;
@@ -665,6 +665,17 @@ namespace GW2app
             ResizeWindowAndPanel(entry, targetHeight);
         }
 
+        // Tooltip text cap. Long chat_links (e.g. PSNA waypoints carry 4-6
+        // codes separated by spaces) would otherwise render an unreadably
+        // wide tooltip. Truncate to TooltipMaxChars including the ellipsis.
+        private const int TooltipMaxChars = 40;
+
+        private static string TruncateTooltipText(string s)
+        {
+            if (string.IsNullOrEmpty(s) || s.Length <= TooltipMaxChars) return s;
+            return s.Substring(0, TooltipMaxChars - 1) + "…";
+        }
+
         // Renders one entry's checkbox + image (+ pending overlay) into the panel and
         // advances `y`. Skips entries with no cached image. Draws a 1px divider above
         // the entry when the section already has at least one rendered entry, and sets
@@ -715,15 +726,22 @@ namespace GW2app
 
             if (_entryChatLinks.TryGetValue(key, out var chatLink) && !string.IsNullOrEmpty(chatLink))
             {
-                image.BasicTooltipText = "Click to copy: " + chatLink;
+                image.BasicTooltipText = TruncateTooltipText("Click to copy: " + chatLink);
                 var capturedLink = chatLink;
                 image.Click += (s, e) => CopyChatLinkToClipboard(capturedLink);
             }
             else if (_entryLinks.TryGetValue(key, out var url) && !string.IsNullOrEmpty(url))
             {
-                image.BasicTooltipText = "Click to open " + url;
+                image.BasicTooltipText = TruncateTooltipText("Click to open " + url);
                 var capturedUrl = url;
                 image.Click += (s, e) => OpenUrlInBrowser(capturedUrl);
+            }
+
+            // Hovercard: only attach for entries the website actually exposes one for.
+            // (per protocol: `has_hover_card === true` in the latest state).
+            if (entryDto != null && entryDto.HasHoverCard)
+            {
+                HoverCard.Attach(image, listId, index);
             }
 
             if (isPending)
@@ -792,7 +810,7 @@ namespace GW2app
         private static readonly FieldInfo _labelBaseFontField =
             typeof(LabelBase).GetField("_font", BindingFlags.NonPublic | BindingFlags.Instance);
 
-        // (Removed CenterButtonText reflection helper — StandardButton already places
+        // (Removed CenterButtonText reflection helper: StandardButton already places
         // text at width/2 - textWidth/2 with Left alignment, which IS visually centered.
         // Setting Center put text in the right half of those bounds, skewing right.)
 
@@ -981,7 +999,7 @@ namespace GW2app
         // Lays out the copy-waypoints panel: slider + chunk buttons. Returns the
         // rendered content height (used by the caller to size the window).
         // Stores entry.RerenderCopyChunks so the slider's ValueChanged can update only
-        // the chunk buttons (leaving the slider alive — disposing it mid-drag dead-ends
+        // the chunk buttons (leaving the slider alive; disposing it mid-drag dead-ends
         // the user's interaction).
         private int RenderCopyMode(ListWindowEntry entry, string listId, List<string> chatLinks)
         {

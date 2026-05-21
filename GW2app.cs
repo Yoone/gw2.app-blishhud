@@ -104,6 +104,39 @@ namespace GW2app
         }
 
         private float UiScale => (_uiScalePct?.Value ?? 100) / 100f;
+
+        // True when a website client is currently connected and the socket is open.
+        // Used to gate hover-card opens: with no live client we can't actually
+        // receive `hover_image` frames, so showing the spinner just glues a stuck
+        // loader to the cursor.
+        private bool IsClientConnected
+        {
+            get
+            {
+                WebSocket ws;
+                lock (_clientLock) { ws = _activeClient; }
+                return ws != null && ws.State == WebSocketState.Open;
+            }
+        }
+
+        // Display-pixels per captured-pixel ratio. Entry images apply
+        // `DisplayWidth / tex.Width` per ScaledSize; hover-card images use the
+        // same factor so they render at the same effective scale. All entry
+        // captures share the same source CSS width (26rem), so any cached
+        // entry texture is a valid reference. Falls back to UiScale when no
+        // entry image is cached (e.g. nothing has rendered yet).
+        private float CaptureScale
+        {
+            get
+            {
+                foreach (var tex in _entryImages.Values)
+                {
+                    if (tex != null && tex.Width > 0)
+                        return (float)DisplayWidth / tex.Width;
+                }
+                return UiScale;
+            }
+        }
         private bool ShowAccountName => _showAccountName?.Value ?? true;
         private bool ShowCopyWaypointsButton => _showCopyWaypointsButton?.Value ?? true;
 
@@ -131,6 +164,14 @@ namespace GW2app
                 _showCopyWaypointsButton.SettingChanged += OnShowCopyWaypointsButtonChanged;
 
             StartHttpServer();
+
+            HoverCard.Init(
+                openCallback:        (lid, idx) => { _ = SendOpenHoverAsync(lid, idx); },
+                closeCallback:       ()         => { _ = SendCloseHoverAsync(); },
+                uiScaleGetter:       () => UiScale,
+                captureScaleGetter:  () => CaptureScale,
+                cachedTextureGetter: (lid, idx) => _hoverImageCache.TryGetValue(EntryKey(lid, idx), out var t) ? t : null,
+                isConnectedGetter:   () => IsClientConnected);
 
             await Task.CompletedTask;
         }
@@ -172,6 +213,8 @@ namespace GW2app
                 }
                 RefreshListWindow(kvp.Key);
             }
+            // Re-size any currently-displayed hover card to the new scale.
+            HoverCard.RefreshScale();
         }
 
         // Subtitle is account-name driven; toggling the setting just refreshes subtitles.
@@ -213,6 +256,9 @@ namespace GW2app
                         case MessageKind.Entry:
                             if (ApplyEntry(msg.Entry))
                                 dirtyLists.Add(msg.Entry.ListId);
+                            break;
+                        case MessageKind.HoverImage:
+                            ApplyHoverImage(msg.HoverImage);
                             break;
                         case MessageKind.Synced:
                             Logger.Info($"Received synced for [{string.Join(",", msg.SyncedListIds ?? new List<string>())}] (loading was [{string.Join(",", _loadingLists)}])");
@@ -299,6 +345,7 @@ namespace GW2app
                 _deferredRefreshes.Clear();
             }
 
+            HoverCard.Tick();
         }
 
         private bool ApplyState(StateMessage state, HashSet<string> dirtyLists)
@@ -389,6 +436,7 @@ namespace GW2app
             var e = list.Entries[entry.Index];
             e.Completed = entry.Completed;
             e.AutoCompleted = entry.AutoCompleted;
+            e.HasHoverCard = entry.HasHoverCard;
 
             var chatKey = EntryKey(entry.ListId, entry.Index);
             if (string.IsNullOrEmpty(entry.ChatLink))
@@ -424,6 +472,14 @@ namespace GW2app
                     // at the end of Update, so the new image is rendered with the spinner
                     // already gone in a single atomic update.
                     _pendingEntries.Remove(key);
+
+                    // A new row image is the website's signal that underlying data changed,
+                    // so the cached hover card is stale. Drop it; next hover re-streams.
+                    if (_hoverImageCache.TryGetValue(key, out var staleHover))
+                    {
+                        try { staleHover?.Dispose(); } catch { }
+                        _hoverImageCache.Remove(key);
+                    }
                 }
                 catch (Exception ex)
                 {
@@ -432,6 +488,36 @@ namespace GW2app
             }
 
             return true;
+        }
+
+        private void ApplyHoverImage(HoverImageMessage hi)
+        {
+            if (hi == null || string.IsNullOrEmpty(hi.ListId) || string.IsNullOrEmpty(hi.ImageB64)) return;
+
+            Texture2D newTex;
+            try
+            {
+                var bytes = Convert.FromBase64String(hi.ImageB64);
+                using (var ms = new MemoryStream(bytes))
+                using (var gdc = GameService.Graphics.LendGraphicsDeviceContext())
+                {
+                    newTex = Texture2D.FromStream(gdc.GraphicsDevice, ms);
+                    PremultiplyAlpha(newTex);
+                }
+            }
+            catch (Exception ex)
+            {
+                Logger.Warn($"Failed to decode hover_image for {hi.ListId}[{hi.Index}] ({hi.Mime}): {ex.Message}");
+                return;
+            }
+
+            var key = EntryKey(hi.ListId, hi.Index);
+            _hoverImageCache.TryGetValue(key, out var oldTex);
+            _hoverImageCache[key] = newTex;
+            // Hand off to HoverCard before disposing oldTex so it can swap to newTex
+            // first (HoverCard may have been displaying oldTex).
+            HoverCard.SetImage(hi.ListId, hi.Index, newTex);
+            if (oldTex != null) { try { oldTex.Dispose(); } catch { } }
         }
 
         private static string EntryKey(string listId, int index) => listId + ":" + index.ToString();
@@ -459,11 +545,16 @@ namespace GW2app
         // new client based on currently-open windows.
         private void ResetClientState(bool dropCatalog)
         {
+            HoverCard.Teardown();
+
             foreach (var tex in _entryImages.Values)
                 try { tex?.Dispose(); } catch { }
             _entryImages.Clear();
             _entryChatLinks.Clear();
             _entryLinks.Clear();
+            foreach (var tex in _hoverImageCache.Values)
+                try { tex?.Dispose(); } catch { }
+            _hoverImageCache.Clear();
             _pendingEntries.Clear();
             _loadingLists.Clear();
             _loadingStartTimes.Clear();
@@ -518,10 +609,15 @@ namespace GW2app
             _contextMenuStrip?.Dispose();
             _cornerIcon?.Dispose();
             _infoWindow?.Dispose();
+            HoverCard.Dispose();
 
             foreach (var tex in _entryImages.Values)
                 tex?.Dispose();
             _entryImages.Clear();
+
+            foreach (var tex in _hoverImageCache.Values)
+                try { tex?.Dispose(); } catch { }
+            _hoverImageCache.Clear();
 
             _iconTexture?.Dispose();
             _cornerSourceTexture?.Dispose();
@@ -570,6 +666,11 @@ namespace GW2app
         // External URL per (listId, index), currently only set for custom entries. Opened
         // in the default browser on entry-image click when no chat_link is present.
         private readonly Dictionary<string, string> _entryLinks = new Dictionary<string, string>();
+        // Last hover-card PNG per (listId, index). Populated as `hover_image` frames arrive
+        // while a subscription is open; consulted on a fresh hover so the previously-rendered
+        // card flashes up instantly while we wait for the new live frame. Invalidated when a
+        // new row image arrives for the same key (underlying data changed).
+        private readonly Dictionary<string, Texture2D> _hoverImageCache = new Dictionary<string, Texture2D>();
         private HashSet<string> _lastSubscribedIds = new HashSet<string>();
         private readonly HashSet<string> _loadingLists = new HashSet<string>();
         // Per-list timestamp of when loading started; drives the timeout check.

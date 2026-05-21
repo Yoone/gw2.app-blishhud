@@ -372,6 +372,44 @@ namespace GW2app
             }
         }
 
+        private async Task SendOpenHoverAsync(string listId, int index)
+        {
+            WebSocket ws;
+            lock (_clientLock) { ws = _activeClient; }
+            if (ws == null || ws.State != WebSocketState.Open) return;
+
+            var payload = new OpenHoverMessage { Type = "open_hover", ListId = listId, Index = index };
+            var json = JsonConvert.SerializeObject(payload);
+            var bytes = Encoding.UTF8.GetBytes(json);
+            try
+            {
+                await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"Failed to send open_hover: {e.Message}");
+            }
+        }
+
+        private async Task SendCloseHoverAsync()
+        {
+            WebSocket ws;
+            lock (_clientLock) { ws = _activeClient; }
+            if (ws == null || ws.State != WebSocketState.Open) return;
+
+            var payload = new CloseHoverMessage { Type = "close_hover" };
+            var json = JsonConvert.SerializeObject(payload);
+            var bytes = Encoding.UTF8.GetBytes(json);
+            try
+            {
+                await ws.SendAsync(new ArraySegment<byte>(bytes), WebSocketMessageType.Text, true, CancellationToken.None);
+            }
+            catch (Exception e)
+            {
+                Logger.Warn($"Failed to send close_hover: {e.Message}");
+            }
+        }
+
         private async Task SendSetEntryCompletedAsync(string listId, int index, bool completed)
         {
             WebSocket ws;
@@ -430,6 +468,13 @@ namespace GW2app
                 {
                     var ids = root["listIds"]?.ToObject<List<string>>() ?? new List<string>();
                     return new IncomingMessage { Kind = MessageKind.Synced, SyncedListIds = ids };
+                }
+                case "hover_image":
+                {
+                    var hi = root.ToObject<HoverImageMessage>();
+                    if (hi == null || string.IsNullOrEmpty(hi.ListId))
+                        throw new ProtocolException("hover_image missing listId");
+                    return new IncomingMessage { Kind = MessageKind.HoverImage, HoverImage = hi };
                 }
                 default:
                     throw new ProtocolException($"unknown message type '{type}'");

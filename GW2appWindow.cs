@@ -229,10 +229,7 @@ namespace GW2app
             }
         }
 
-        // windowRegion.Y of 5 (instead of 0) shifts where Blish anchors the background draw
-        // upward by ~5 px, so the bg fully covers the panel area (which itself is offset
-        // ~5 px above where Blish places the bg by default).
-        private static Rectangle WindowRegionFor(int w, int h) => new Rectangle(0, 5, w, h - 5);
+        private static Rectangle WindowRegionFor(int w, int h) => new Rectangle(0, 0, w, h);
         private static Rectangle ContentRegionFor(int w, int h) =>
             new Rectangle(0, ContentTopPadding, w, h - ContentBottomMargin);
 
@@ -291,28 +288,54 @@ namespace GW2app
         // (~(25, 26) for the standard GW2 window background) so the title-bar art
         // and left/top frame are preserved. The right/bottom edges of the source frame
         // are cropped away when our window is narrower/shorter than the asset.
+        // Cached opaque bounding-box of the source asset's interior. The asset
+        // has an alpha gradient at all four edges (the window's built-in fade);
+        // sampling outside this box introduces transparency in the destination.
+        // Found once via an alpha-channel scan and reused across resizes.
+        private static bool      _srcOpaqueBoundsKnown;
+        private static Rectangle _srcOpaqueBounds;
+        private const byte       OpaqueAlphaThreshold = 240;
+
         private static Texture2D CreateClippedFrom(Texture2D src, int w, int h)
         {
+            // Skip the leftmost / topmost decorative pixels of the source.
             const int srcX = 25;
             const int srcY = 26;
 
-            int copyW = Math.Min(w, src.Width - srcX);
-            int copyH = Math.Min(h, src.Height - srcY);
-            if (copyW <= 0 || copyH <= 0)
+            int srcW = src.Width  - srcX;
+            int srcH = src.Height - srcY;
+            if (srcW <= 0 || srcH <= 0)
                 return CreateSolidTexture(w, h, BlackBg);
 
-            var srcPixels = new Color[copyW * copyH];
-            src.GetData(0, new Rectangle(srcX, srcY, copyW, copyH), srcPixels, 0, copyW * copyH);
+            var srcPixels = new Color[srcW * srcH];
+            src.GetData(0, new Rectangle(srcX, srcY, srcW, srcH), srcPixels, 0, srcW * srcH);
+
+            if (!_srcOpaqueBoundsKnown)
+            {
+                _srcOpaqueBounds = FindOpaqueBounds(srcPixels, srcW, srcH);
+                _srcOpaqueBoundsKnown = true;
+            }
+            // Sample only the opaque interior, not the full source rect.
+            // Stretching this over the destination fills every pixel without
+            // any of the source's edge alpha bleeding in.
+            int opX = _srcOpaqueBounds.X;
+            int opY = _srcOpaqueBounds.Y;
+            int opW = _srcOpaqueBounds.Width;
+            int opH = _srcOpaqueBounds.Height;
 
             var dstPixels = new Color[w * h];
-            for (int y = 0; y < copyH; y++)
+            for (int dy = 0; dy < h; dy++)
             {
-                int srcRow = y * copyW;
-                int dstRow = y * w;
-                for (int x = 0; x < copyW; x++)
+                int sy = opY + (int)((dy * (long)opH) / h);
+                if (sy >= opY + opH) sy = opY + opH - 1;
+                int srcRow = sy * srcW;
+                int dstRow = dy * w;
+                for (int dx = 0; dx < w; dx++)
                 {
-                    var c = srcPixels[srcRow + x];
-                    dstPixels[dstRow + x] = new Color(
+                    int sx = opX + (int)((dx * (long)opW) / w);
+                    if (sx >= opX + opW) sx = opX + opW - 1;
+                    var c = srcPixels[srcRow + sx];
+                    dstPixels[dstRow + dx] = new Color(
                         (byte)(c.R * GameTextureBrightness),
                         (byte)(c.G * GameTextureBrightness),
                         (byte)(c.B * GameTextureBrightness),
@@ -326,6 +349,30 @@ namespace GW2app
                 tex.SetData(dstPixels);
                 return tex;
             }
+        }
+
+        // Bounding box of pixels with alpha >= OpaqueAlphaThreshold. Falls back
+        // to the full input rectangle if none qualify (which would mean the
+        // source has no opaque pixels at all, in which case there's nothing
+        // smarter to do).
+        private static Rectangle FindOpaqueBounds(Color[] pixels, int w, int h)
+        {
+            int top = h, bottom = -1, left = w, right = -1;
+            for (int y = 0; y < h; y++)
+            {
+                int row = y * w;
+                for (int x = 0; x < w; x++)
+                {
+                    if (pixels[row + x].A < OpaqueAlphaThreshold) continue;
+                    if (y < top)    top = y;
+                    if (y > bottom) bottom = y;
+                    if (x < left)   left = x;
+                    if (x > right)  right = x;
+                }
+            }
+            if (bottom < top || right < left)
+                return new Rectangle(0, 0, w, h);
+            return new Rectangle(left, top, right - left + 1, bottom - top + 1);
         }
 
         // Set the window's emblem to a tinted copy of `source`. Each pixel's RGB is
@@ -420,7 +467,7 @@ namespace GW2app
 
         // Icon and font default to "normal" sizes; in compact-title mode (UiScale < 1)
         // they shrink to match the smaller subtitle font (Font14 vs Font16). Above
-        // 100% scale we leave them at the normal size — no upward growth.
+        // 100% scale we leave them at the normal size, no upward growth.
         private const int OverlayIconSize        = 16;
         private const int OverlayIconSizeCompact = 14;
         private const int OverlayGapAfterIcon = 4;
@@ -461,6 +508,23 @@ namespace GW2app
             {
                 if (_compactTitle) _customSubtitle = value ?? "";
                 else base.Subtitle = value;
+            }
+        }
+
+        public override void PaintBeforeChildren(SpriteBatch spriteBatch, Rectangle bounds)
+        {
+            base.PaintBeforeChildren(spriteBatch, bounds);
+
+            // Blish's BackgroundDestinationBounds drift below the window when
+            // ratios go stale across resizes. Our bg is opaque (the asset's
+            // opaque interior nearest-neighbor scaled), so that drift became
+            // visible as extra colour past the panel. Re-draw the bg over the
+            // exact ContentRegion to cover the overflow with a perfectly
+            // sized copy of the texture; the area outside ContentRegion is
+            // already painted by base (titlebar, frame, corners).
+            if (_ownedBackground != null && this.ContentRegion.Width > 0 && this.ContentRegion.Height > 0)
+            {
+                spriteBatch.DrawOnCtrl(this, _ownedBackground, this.ContentRegion);
             }
         }
 
