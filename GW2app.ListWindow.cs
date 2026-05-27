@@ -537,13 +537,15 @@ namespace GW2app
             // Collect individual waypoint codes for this list (entry order, then
             // space-split since one chat_link may bundle multiple codes; PSNA carries
             // ~4 vendor waypoints per entry). When entry_type is present we restrict
-            // to waypoint-bearing types ("location" and "dailypsna") per protocol;
-            // entries without entry_type are accepted as a fallback for older clients.
+            // to waypoint-bearing types ("location", "dailypsna", "vendoritem") per
+            // protocol; entries without entry_type are accepted as a fallback for
+            // older clients.
             var chatLinks = new List<string>();
             for (int i = 0; i < total; i++)
             {
                 var t = list.Entries[i]?.EntryType;
-                bool waypointEligible = string.IsNullOrEmpty(t) || t == "location" || t == "dailypsna";
+                bool waypointEligible = string.IsNullOrEmpty(t)
+                    || t == "location" || t == "dailypsna" || t == "vendoritem";
                 if (!waypointEligible) continue;
                 if (_entryChatLinks.TryGetValue(EntryKey(listId, i), out var cl) && !string.IsNullOrEmpty(cl))
                     chatLinks.AddRange(cl.Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));

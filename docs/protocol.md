@@ -48,7 +48,7 @@ Entry = { completed: bool, autoCompleted: bool, entry_type?: string, has_hover_c
 Entries have **no stable ID**. They are addressed by `(listId, index)`
 within the latest `state`.
 
-`entry_type` is a short string identifying the kind of entry, mirroring the discriminator the website uses internally (e.g. `"item"`, `"timer"`, `"location"`, `"mapchest"`, `"recipe"`, `"dailypsna"`, `"tpdelivery"`, `"wv"`, `"custom"`, etc.). It exists so the module can mirror website-side per-type behaviour, e.g. an in-game "Copy waypoints" can include only entries with `entry_type === "location"` (those are the ones that may carry a Waypoint or POI `chat_link`) and `entry_type === "dailypsna"` (which carries multiple vendor waypoints in `chat_link`, space-separated).
+`entry_type` is a short string identifying the kind of entry, mirroring the discriminator the website uses internally (e.g. `"item"`, `"timer"`, `"location"`, `"mapchest"`, `"recipe"`, `"dailypsna"`, `"vendoritem"`, `"tpdelivery"`, `"wv"`, `"custom"`, etc.). It exists so the module can mirror website-side per-type behaviour, e.g. an in-game "Copy waypoints" can include only entries with `entry_type === "location"` (those are the ones that may carry a Waypoint or POI `chat_link`), `entry_type === "dailypsna"` (which carries multiple vendor waypoints in `chat_link`, space-separated), and `entry_type === "vendoritem"` (a vendor location for a tracked item).
 
 `has_hover_card` is set to `true` on entries that have an associated hovercard the module can request via `request_hover` (see below). Absent or `false` means the entry has no hovercard and the module should suppress any hover-related UX for that row.
 
