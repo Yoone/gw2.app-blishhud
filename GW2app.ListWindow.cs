@@ -539,11 +539,15 @@ namespace GW2app
             // ~4 vendor waypoints per entry). When entry_type is present we restrict
             // to waypoint-bearing types ("location", "dailypsna", "vendoritem") per
             // protocol; entries without entry_type are accepted as a fallback for
-            // older clients.
+            // older clients. Completed entries (checked off by the user or
+            // auto-completed from in-game data) are excluded: their waypoints are
+            // for things the user is already done with.
             var chatLinks = new List<string>();
             for (int i = 0; i < total; i++)
             {
-                var t = list.Entries[i]?.EntryType;
+                var e = list.Entries[i];
+                if (e != null && (e.Completed || e.AutoCompleted)) continue;
+                var t = e?.EntryType;
                 bool waypointEligible = string.IsNullOrEmpty(t)
                     || t == "location" || t == "dailypsna" || t == "vendoritem";
                 if (!waypointEligible) continue;
