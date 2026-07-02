@@ -1498,21 +1498,34 @@ namespace GW2app
             }
         }
 
-        // Open an external URL in the user's default browser. Used for custom-entry `link`
-        // values; the website restricts these to http(s) at submit time.
+        // Open a custom-entry `link` in the browser, only allowing https URLs.
         private void OpenUrlInBrowser(string url)
         {
             if (string.IsNullOrEmpty(url)) return;
+
+            if (!Uri.TryCreate(url, UriKind.Absolute, out var uri) ||
+                (uri.Scheme != Uri.UriSchemeHttp && uri.Scheme != Uri.UriSchemeHttps))
+            {
+                Logger.Warn($"Refusing to open non-web URL '{url}'");
+                return;
+            }
+
+            // Silently upgrade http to https.
+            if (uri.Scheme == Uri.UriSchemeHttp)
+            {
+                uri = new UriBuilder(uri) { Scheme = Uri.UriSchemeHttps, Port = -1 }.Uri;
+            }
+
             try
             {
-                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(url)
+                System.Diagnostics.Process.Start(new System.Diagnostics.ProcessStartInfo(uri.AbsoluteUri)
                 {
                     UseShellExecute = true,
                 });
             }
             catch (Exception e)
             {
-                Logger.Warn($"Failed to open URL '{url}': {e.Message}");
+                Logger.Warn($"Failed to open URL '{uri.AbsoluteUri}': {e.Message}");
             }
         }
 

@@ -60,6 +60,15 @@ namespace GW2app
             {
                 if (ctx.Request.IsWebSocketRequest)
                 {
+                    // CORS does not gate WebSockets, so check Origin on the handshake.
+                    var wsOrigin = ctx.Request.Headers["Origin"];
+                    if (!IsAllowedOrigin(wsOrigin))
+                    {
+                        Logger.Warn($"Rejecting WS handshake from disallowed origin '{wsOrigin}' ({ctx.Request.RemoteEndPoint})");
+                        ctx.Response.StatusCode = 403;
+                        ctx.Response.Close();
+                        return;
+                    }
                     await HandleWebSocket(ctx);
                     return;
                 }
