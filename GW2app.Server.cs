@@ -25,7 +25,7 @@ namespace GW2app
             }
             catch (HttpListenerException e)
             {
-                Logger.Info($"Could not bind {prefix} ({e.Message}); listening on localhost only.");
+                Logger.Info(e, $"Could not bind {prefix}; listening on localhost only.");
                 _httpListener = new HttpListener();
                 _httpListener.Prefixes.Add($"http://localhost:{HttpPort}/");
                 _httpListener.Start();
@@ -89,7 +89,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Warn($"Error handling HTTP request: {e.Message}");
+                Logger.Warn(e, "Error handling HTTP request.");
                 try { ctx.Response.StatusCode = 500; ctx.Response.Close(); } catch { }
             }
         }
@@ -160,7 +160,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Warn($"WS accept failed: {e.Message}");
+                Logger.Warn(e, "WS accept failed.");
                 return;
             }
 
@@ -249,13 +249,13 @@ namespace GW2app
                         }
                         catch (ProtocolException pe)
                         {
-                            Logger.Warn($"Protocol violation from {remote}: {pe.Message}");
+                            Logger.Warn(pe, $"Protocol violation from {remote}.");
                             await CloseWsAsync(ws, CloseCodeProtocolViolation, pe.Message);
                             return;
                         }
                         catch (Exception e)
                         {
-                            Logger.Warn($"Failed to parse WS message from {remote}: {e.Message}");
+                            Logger.Warn(e, $"Failed to parse WS message from {remote}.");
                             await CloseWsAsync(ws, CloseCodeProtocolViolation, "bad json");
                             return;
                         }
@@ -284,7 +284,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Info($"WS connection from {remote} ended: {e.Message}");
+                Logger.Info(e, $"WS connection from {remote} ended.");
             }
             finally
             {
@@ -337,7 +337,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Info($"Sending close frame to superseded client failed: {e.Message}");
+                Logger.Info(e, "Sending close frame to superseded client failed.");
             }
 
             _ = Task.Delay(TimeSpan.FromSeconds(10)).ContinueWith(_ =>
@@ -377,7 +377,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Warn($"Failed to send subscribe: {e.Message}");
+                Logger.Warn(e, "Failed to send subscribe.");
             }
         }
 
@@ -396,7 +396,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Warn($"Failed to send open_hover: {e.Message}");
+                Logger.Warn(e, "Failed to send open_hover.");
             }
         }
 
@@ -415,7 +415,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Warn($"Failed to send close_hover: {e.Message}");
+                Logger.Warn(e, "Failed to send close_hover.");
             }
         }
 
@@ -441,7 +441,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Warn($"Failed to send set_entry_completed: {e.Message}");
+                Logger.Warn(e, "Failed to send set_entry_completed.");
             }
         }
 

@@ -289,7 +289,7 @@ namespace GW2app
                 }
                 catch (Exception e)
                 {
-                    Logger.Warn($"Failed to apply message: {e.Message}");
+                    Logger.Warn(e, "Failed to apply message.");
                 }
             }
 
@@ -483,7 +483,7 @@ namespace GW2app
                 }
                 catch (Exception ex)
                 {
-                    Logger.Warn($"Failed to decode image for {entry.ListId}[{entry.Index}] ({entry.Mime}): {ex.Message}");
+                    Logger.Warn(ex, $"Failed to decode image for {entry.ListId}[{entry.Index}] ({entry.Mime}).");
                 }
             }
 
@@ -507,7 +507,7 @@ namespace GW2app
             }
             catch (Exception ex)
             {
-                Logger.Warn($"Failed to decode hover_image for {hi.ListId}[{hi.Index}] ({hi.Mime}): {ex.Message}");
+                Logger.Warn(ex, $"Failed to decode hover_image for {hi.ListId}[{hi.Index}] ({hi.Mime}).");
                 return;
             }
 

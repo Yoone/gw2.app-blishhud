@@ -124,7 +124,7 @@ namespace GW2app
             openBtn.Click += (s, e) =>
             {
                 try { System.Diagnostics.Process.Start("https://gw2.app/blish"); }
-                catch (Exception ex) { Logger.Warn($"Failed to open browser: {ex.Message}"); }
+                catch (Exception ex) { Logger.Warn(ex, "Failed to open browser."); }
             };
             y += btnH + 18;
 
@@ -1402,7 +1402,7 @@ namespace GW2app
             try { persisted = JsonConvert.DeserializeObject<List<string>>(raw) ?? new List<string>(); }
             catch (Exception e)
             {
-                Logger.Warn($"Restore: failed to parse persisted JSON ({raw}): {e.Message}");
+                Logger.Warn(e, $"Restore: failed to parse persisted JSON ({raw}).");
                 persisted = new List<string>();
             }
 
@@ -1460,7 +1460,7 @@ namespace GW2app
                 _persistedOpenListsJson.Value = json;
                 Logger.Info($"Persisted open lists = {json}");
             }
-            catch (Exception e) { Logger.Warn($"Failed to persist open lists: {e.Message}"); }
+            catch (Exception e) { Logger.Warn(e, "Failed to persist open lists."); }
         }
 
         private void AddPersisted(string listId)
@@ -1494,7 +1494,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Warn($"Failed to copy chat link: {e.Message}");
+                Logger.Warn(e, "Failed to copy chat link.");
             }
         }
 
@@ -1525,7 +1525,7 @@ namespace GW2app
             }
             catch (Exception e)
             {
-                Logger.Warn($"Failed to open URL '{uri.AbsoluteUri}': {e.Message}");
+                Logger.Warn(e, $"Failed to open URL '{uri.AbsoluteUri}'.");
             }
         }
 

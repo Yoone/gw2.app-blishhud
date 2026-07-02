@@ -180,7 +180,7 @@ namespace GW2app
                     _hasOpenSub = false;
                     _openListId = null;
                     _currentTex = null;
-                    try { _closeCallback?.Invoke(); } catch (Exception ex) { Logger.Warn($"close_hover send failed: {ex.Message}"); }
+                    try { _closeCallback?.Invoke(); } catch (Exception ex) { Logger.Warn(ex, "close_hover send failed."); }
                 }
             };
         }
@@ -332,7 +332,7 @@ namespace GW2app
             _pendingListId = null;
 
             try { _openCallback?.Invoke(listId, index); }
-            catch (Exception ex) { Logger.Warn($"open_hover send failed: {ex.Message}"); }
+            catch (Exception ex) { Logger.Warn(ex, "open_hover send failed."); }
 
             // Instant display from cache (if any) while we wait for the first
             // live frame; otherwise show the spinner placeholder.

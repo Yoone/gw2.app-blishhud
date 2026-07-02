@@ -196,7 +196,7 @@ namespace GW2app
             openSiteBtn.Click += (s, e) =>
             {
                 try { System.Diagnostics.Process.Start("https://gw2.app/blish"); }
-                catch (Exception ex) { Logger.Warn("Failed to open browser: " + ex.Message); }
+                catch (Exception ex) { Logger.Warn(ex, "Failed to open browser."); }
             };
 
             // ===================== Live setting -> control sync =====================

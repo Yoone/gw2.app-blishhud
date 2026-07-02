@@ -246,7 +246,7 @@ namespace GW2app
                 if (src != null && src.HasSwapped)
                 {
                     try { return CreateClippedFrom(src.Texture, w, h); }
-                    catch (Exception e) { Logger.Warn($"Clip failed: {e.Message}"); }
+                    catch (Exception e) { Logger.Warn(e, "Clip failed."); }
                 }
 
                 // Asset hasn't finished loading. Subscribe so we rebuild when it does.
