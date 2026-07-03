@@ -66,6 +66,13 @@ namespace GW2app
                 true,
                 () => "Show \"Copy waypoints\" button in lists",
                 () => "Hides the bottom-of-list button used to copy chat-link waypoints.");
+            // Integer percentage so the slider snaps to whole percent values.
+            _bgOpacityPct = appearance.DefineSetting(
+                "bgOpacityPct",
+                85,
+                () => "Window background opacity",
+                () => "How opaque the window background is. Lower is more see-through.");
+            _bgOpacityPct.SetRange(75, 100);
 
             // Integer percentage so the slider snaps to whole percent values. Setting key
             // bumped from "uiScale" because the type changed (float -> int) and old
@@ -97,6 +104,7 @@ namespace GW2app
         {
             return new GW2appSettingsView(
                 _windowTheme,
+                _bgOpacityPct,
                 _showAccountName,
                 _showCopyWaypointsButton,
                 _uiScalePct,
@@ -104,6 +112,7 @@ namespace GW2app
         }
 
         private float UiScale => (_uiScalePct?.Value ?? 100) / 100f;
+        private float BgOpacity => (_bgOpacityPct?.Value ?? 85) / 100f;
 
         // True when a website client is currently connected and the socket is open.
         // Used to gate hover-card opens: with no live client we can't actually
@@ -140,9 +149,19 @@ namespace GW2app
         private bool ShowAccountName => _showAccountName?.Value ?? true;
         private bool ShowCopyWaypointsButton => _showCopyWaypointsButton?.Value ?? true;
 
-        protected override async Task LoadAsync()
+        // The corner icon is created here (main thread) rather than in LoadAsync
+        // (background thread). A CornerIcon registers itself with the overlay's
+        // top-bar icon strip on construction, and doing that off-thread leaves it
+        // missing from the bar on a fresh install until Blish restarts.
+        protected override void Initialize()
         {
             _iconTexture = ContentsManager.GetTexture("gw2app-icon.png");
+            CreateCornerIcon();
+            RebuildContextMenu();
+        }
+
+        protected override async Task LoadAsync()
+        {
             _rechargeTexture = ContentsManager.GetTexture("recharge.png");
             _cornerSourceTexture = ContentsManager.GetTexture("gw2app-corner.png");
             _logoTexture = ContentsManager.GetTexture("gw2app-logo.png");
@@ -151,11 +170,11 @@ namespace GW2app
             // Prewarm the GW2 window background so it's ready when the user picks
             // "Game texture" in the settings dropdown.
             AsyncTexture2D.FromAssetId(155997);
-            CreateCornerIcon();
-            RebuildContextMenu();
 
             if (_windowTheme != null)
                 _windowTheme.SettingChanged += OnWindowThemeChanged;
+            if (_bgOpacityPct != null)
+                _bgOpacityPct.SettingChanged += OnBgOpacityChanged;
             if (_uiScalePct != null)
                 _uiScalePct.SettingChanged += OnUiScaleChanged;
             if (_showAccountName != null)
@@ -174,6 +193,14 @@ namespace GW2app
                 isConnectedGetter:   () => IsClientConnected);
 
             await Task.CompletedTask;
+        }
+
+        private void OnBgOpacityChanged(object sender, ValueChangedEventArgs<int> e)
+        {
+            float opacity = e.NewValue / 100f;
+            foreach (var entry in _listWindows.Values)
+                entry.Window?.SetBackgroundOpacity(opacity);
+            _infoWindow?.SetBackgroundOpacity(opacity);
         }
 
         private void OnWindowThemeChanged(object sender, ValueChangedEventArgs<GW2appWindow.WindowTheme> e)
@@ -572,6 +599,8 @@ namespace GW2app
 
             if (_windowTheme != null)
                 _windowTheme.SettingChanged -= OnWindowThemeChanged;
+            if (_bgOpacityPct != null)
+                _bgOpacityPct.SettingChanged -= OnBgOpacityChanged;
             if (_uiScalePct != null)
                 _uiScalePct.SettingChanged -= OnUiScaleChanged;
             if (_showAccountName != null)
@@ -699,6 +728,7 @@ namespace GW2app
         // very control that fired the event.
         private readonly HashSet<string> _deferredRefreshes = new HashSet<string>();
         private SettingEntry<GW2appWindow.WindowTheme> _windowTheme;
+        private SettingEntry<int> _bgOpacityPct;
         private SettingEntry<int> _uiScalePct;
         private SettingEntry<bool> _showAccountName;
         private SettingEntry<bool> _showCopyWaypointsButton;

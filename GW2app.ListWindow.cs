@@ -53,7 +53,7 @@ namespace GW2app
 
         private void BuildInfoWindow()
         {
-            _infoWindow = new GW2appWindow(430, 460, _windowTheme?.Value ?? GW2appWindow.WindowTheme.Game)
+            _infoWindow = new GW2appWindow(430, 460, _windowTheme?.Value ?? GW2appWindow.WindowTheme.Game, bgOpacity: BgOpacity)
             {
                 Parent = GameService.Graphics.SpriteScreen,
                 Title = "Connect GW2.app",
@@ -309,7 +309,7 @@ namespace GW2app
 
             bool compact = UiScale < 1.0f;
             int initialWidth = WindowWidthFor(list);
-            var window = new GW2appWindow(initialWidth, WindowMaxHeight, _windowTheme?.Value ?? GW2appWindow.WindowTheme.Game, compactTitle: compact)
+            var window = new GW2appWindow(initialWidth, WindowMaxHeight, _windowTheme?.Value ?? GW2appWindow.WindowTheme.Game, compactTitle: compact, bgOpacity: BgOpacity)
             {
                 Parent = GameService.Graphics.SpriteScreen,
                 Title = TitleFor(list),
@@ -866,7 +866,9 @@ namespace GW2app
         // Vertical offset of the footer button within the footer panel. Negative
         // values let it sit slightly above the panel's top edge.
         private const int FooterTopMargin   = -4;
-        private int FooterReserveTotal      => FooterTopMargin + ActionButtonHeight;
+        // Breathing room below the button; grows the footer bar and the window alike.
+        private const int FooterBottomMargin = 6;
+        private int FooterReserveTotal      => FooterTopMargin + ActionButtonHeight + FooterBottomMargin;
 
         // ---- Loading / failure UIs ----
         //

@@ -31,9 +31,17 @@ namespace GW2app
         public const int ContentTopPadding = 6;
         public const int ContentBottomMargin = 5;
 
-        private static readonly Color BlackBg = new Color(0, 0, 0, 215);
+        // Theme fills are fully opaque; window translucency is a single draw-time
+        // factor (_bgOpacity) applied when the background is painted, so all themes
+        // share one consistent opacity instead of baking it per-color.
+        private static readonly Color BlackBg = new Color(0, 0, 0, 255);
         // WindowTheme.GW2app: a dark blue-gray (#1c212b) matching the website's panel color.
-        private static readonly Color DarkBg  = new Color(0x1c, 0x21, 0x2b, 215);
+        private static readonly Color DarkBg  = new Color(0x1c, 0x21, 0x2b, 255);
+
+        // Background opacity range exposed to the user (matches the settings slider).
+        public const float MinBgOpacity     = 0.75f;
+        public const float MaxBgOpacity     = 1.0f;
+        public const float DefaultBgOpacity = 0.85f;
 
         // Multiplier applied to RGB components when sampling the GW2 frame texture for
         // the "Game texture" mode. <1 darkens; 1.0 = original. Alpha is left untouched.
@@ -41,8 +49,14 @@ namespace GW2app
 
         private WindowTheme _theme;
         private Texture2D _ownedBackground;
+        private float _bgOpacity = DefaultBgOpacity;
         private int _width;
         private int _height;
+        // 1x1 transparent texture handed to base as the window "background" so Blish
+        // paints no interior fill (it still paints titlebar/frame/corners from its own
+        // textures). We paint the interior ourselves once, at _bgOpacity, in
+        // PaintBeforeChildren; this avoids the old double-draw that compounded alpha.
+        private static Texture2D _transparentFill;
         // Keeps a reference to the source AsyncTexture2D and a handler so we can rebuild
         // the synthetic background when the asset finishes async loading.
         private AsyncTexture2D _gameTextureSource;
@@ -56,12 +70,13 @@ namespace GW2app
         private string _customTitle = "";
         private string _customSubtitle = "";
 
-        public GW2appWindow(int width, int height, WindowTheme theme = WindowTheme.Game, bool compactTitle = false)
+        public GW2appWindow(int width, int height, WindowTheme theme = WindowTheme.Game, bool compactTitle = false, float bgOpacity = DefaultBgOpacity)
         {
             _theme = theme;
             _width = width;
             _height = height;
             _compactTitle = compactTitle;
+            _bgOpacity = ClampOpacity(bgOpacity);
 
             // Clear Blish's default "No Title" placeholder up front when in compact
             // mode; otherwise it shows in the title bar (in DefaultFont32) until the
@@ -186,6 +201,16 @@ namespace GW2app
             Recalculate();
         }
 
+        // Set the window background opacity at runtime. Applied at draw time, so no
+        // texture rebuild or relayout is needed; the next paint picks it up.
+        public void SetBackgroundOpacity(float opacity)
+        {
+            _bgOpacity = ClampOpacity(opacity);
+        }
+
+        private static float ClampOpacity(float o) =>
+            o < MinBgOpacity ? MinBgOpacity : (o > MaxBgOpacity ? MaxBgOpacity : o);
+
         // Single entry point for refreshing the window's geometry. Anything that wants
         // the layout to update (constructor, SetWindowHeight/SetWindowSize, user resize
         // via OnResized, background mode change, async game-texture swap) calls this.
@@ -205,7 +230,9 @@ namespace GW2app
                 var oldBg = _ownedBackground;
                 _ownedBackground = newBg;
 
-                ConstructWindow(_ownedBackground, WindowRegionFor(_width, _height), ContentRegionFor(_width, _height), new Point(_width, _height));
+                // Base gets a transparent fill; we paint _ownedBackground ourselves in
+                // PaintBeforeChildren (see that override and _transparentFill).
+                ConstructWindow(TransparentFill(), WindowRegionFor(_width, _height), ContentRegionFor(_width, _height), new Point(_width, _height));
 
                 // ConstructWindow sets ContentRegion to the raw passed value (which
                 // is taller than the actual content area). Re-apply the Height-Y-margin
@@ -270,6 +297,14 @@ namespace GW2app
             }
             _gameTextureSource = null;
             _gameTextureSwapHandler = null;
+        }
+
+        // Lazily-created shared 1x1 transparent texture (scaled to fill by base).
+        private static Texture2D TransparentFill()
+        {
+            if (_transparentFill == null)
+                _transparentFill = CreateSolidTexture(1, 1, Color.Transparent);
+            return _transparentFill;
         }
 
         private static Texture2D CreateSolidTexture(int w, int h, Color c)
@@ -515,16 +550,14 @@ namespace GW2app
         {
             base.PaintBeforeChildren(spriteBatch, bounds);
 
-            // Blish's BackgroundDestinationBounds drift below the window when
-            // ratios go stale across resizes. Our bg is opaque (the asset's
-            // opaque interior nearest-neighbor scaled), so that drift became
-            // visible as extra colour past the panel. Re-draw the bg over the
-            // exact ContentRegion to cover the overflow with a perfectly
-            // sized copy of the texture; the area outside ContentRegion is
-            // already painted by base (titlebar, frame, corners).
+            // We own the interior fill: base was handed a transparent background, so
+            // this is the only fill draw (no compounding). Painting the exact
+            // ContentRegion also sidesteps Blish's BackgroundDestinationBounds drift on
+            // resize. Outside ContentRegion is painted by base (titlebar, frame,
+            // corners). Color.White * _bgOpacity applies the window translucency.
             if (_ownedBackground != null && this.ContentRegion.Width > 0 && this.ContentRegion.Height > 0)
             {
-                spriteBatch.DrawOnCtrl(this, _ownedBackground, this.ContentRegion);
+                spriteBatch.DrawOnCtrl(this, _ownedBackground, this.ContentRegion, null, Color.White * _bgOpacity);
             }
         }
 

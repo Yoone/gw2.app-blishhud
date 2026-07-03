@@ -25,6 +25,7 @@ namespace GW2app
         private const int TopPad        = 8;
 
         private readonly SettingEntry<GW2appWindow.WindowTheme> _windowTheme;
+        private readonly SettingEntry<int>  _bgOpacityPct;
         private readonly SettingEntry<bool> _showAccountName;
         private readonly SettingEntry<bool> _showCopyWaypointsButton;
         private readonly SettingEntry<int>  _uiScalePct;
@@ -32,18 +33,21 @@ namespace GW2app
 
         // Subscriptions kept so we can detach in Unload.
         private EventHandler<ValueChangedEventArgs<int>>  _scaleChangedHandler;
+        private EventHandler<ValueChangedEventArgs<int>>  _opacityChangedHandler;
         private EventHandler<ValueChangedEventArgs<bool>> _accountChangedHandler;
         private EventHandler<ValueChangedEventArgs<bool>> _copyBtnChangedHandler;
         private EventHandler<ValueChangedEventArgs<GW2appWindow.WindowTheme>> _themeChangedHandler;
 
         public GW2appSettingsView(
             SettingEntry<GW2appWindow.WindowTheme> windowTheme,
+            SettingEntry<int>                         bgOpacityPct,
             SettingEntry<bool>                        showAccountName,
             SettingEntry<bool>                        showCopyWaypointsButton,
             SettingEntry<int>                         uiScalePct,
             Action                                    onResetScale)
         {
             _windowTheme             = windowTheme;
+            _bgOpacityPct            = bgOpacityPct;
             _showAccountName         = showAccountName;
             _showCopyWaypointsButton = showCopyWaypointsButton;
             _uiScalePct              = uiScalePct;
@@ -102,6 +106,32 @@ namespace GW2app
                     _windowTheme.Value = v;
             };
             ly += 36;
+
+            // Background opacity: readout label + slider (75-100%).
+            var opacityLabel = new Label
+            {
+                Text          = FormatOpacity(_bgOpacityPct.Value),
+                Font          = GameService.Content.DefaultFont14,
+                TextColor     = Color.LightGray,
+                AutoSizeWidth = true,
+                Location      = new Point(leftX, ly),
+                Parent        = buildPanel,
+            };
+            ly += 22;
+
+            var opacityBar = new TrackBar
+            {
+                MinValue  = 75,
+                MaxValue  = 100,
+                Value     = _bgOpacityPct.Value,
+                SmallStep = true,
+                Width     = columnWidth - 16,
+                Height    = 16,
+                Location  = new Point(leftX, ly),
+                Parent    = buildPanel,
+            };
+            opacityBar.ValueChanged += (s, e) => _bgOpacityPct.Value = (int)Math.Round(e.Value);
+            ly += 28;
 
             var acctCheckbox = new Checkbox
             {
@@ -225,17 +255,26 @@ namespace GW2app
                 if (bgDropdown.SelectedItem != label) bgDropdown.SelectedItem = label;
             };
             _windowTheme.SettingChanged += _themeChangedHandler;
+
+            _opacityChangedHandler = (s, e) =>
+            {
+                opacityLabel.Text = FormatOpacity(e.NewValue);
+                if ((int)Math.Round(opacityBar.Value) != e.NewValue) opacityBar.Value = e.NewValue;
+            };
+            _bgOpacityPct.SettingChanged += _opacityChangedHandler;
         }
 
         protected override void Unload()
         {
             if (_scaleChangedHandler   != null && _uiScalePct              != null) _uiScalePct.SettingChanged              -= _scaleChangedHandler;
+            if (_opacityChangedHandler != null && _bgOpacityPct            != null) _bgOpacityPct.SettingChanged            -= _opacityChangedHandler;
             if (_accountChangedHandler != null && _showAccountName         != null) _showAccountName.SettingChanged         -= _accountChangedHandler;
             if (_copyBtnChangedHandler != null && _showCopyWaypointsButton != null) _showCopyWaypointsButton.SettingChanged -= _copyBtnChangedHandler;
             if (_themeChangedHandler   != null && _windowTheme             != null) _windowTheme.SettingChanged             -= _themeChangedHandler;
         }
 
         private static string FormatScale(int pct) => "List UI scale: " + pct + "%";
+        private static string FormatOpacity(int pct) => "Background opacity: " + pct + "%";
 
         // Reads the [Description] attribute on an enum value, falling back to the
         // member name. Lets us reuse the labels declared on WindowTheme without
