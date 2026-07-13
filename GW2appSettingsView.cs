@@ -3,6 +3,7 @@ using System.Reflection;
 using Blish_HUD;
 using Blish_HUD.Controls;
 using Blish_HUD.Graphics.UI;
+using Blish_HUD.Input;
 using Blish_HUD.Settings;
 using Microsoft.Xna.Framework;
 using DescriptionAttribute = System.ComponentModel.DescriptionAttribute;
@@ -29,6 +30,7 @@ namespace GW2app
         private readonly SettingEntry<bool> _showAccountName;
         private readonly SettingEntry<bool> _showCopyWaypointsButton;
         private readonly SettingEntry<int>  _uiScalePct;
+        private readonly SettingEntry<KeyBinding> _toggleListsKeybind;
         private readonly Action _onResetScale;
 
         // Subscriptions kept so we can detach in Unload.
@@ -44,6 +46,7 @@ namespace GW2app
             SettingEntry<bool>                        showAccountName,
             SettingEntry<bool>                        showCopyWaypointsButton,
             SettingEntry<int>                         uiScalePct,
+            SettingEntry<KeyBinding>                  toggleListsKeybind,
             Action                                    onResetScale)
         {
             _windowTheme             = windowTheme;
@@ -51,6 +54,7 @@ namespace GW2app
             _showAccountName         = showAccountName;
             _showCopyWaypointsButton = showCopyWaypointsButton;
             _uiScalePct              = uiScalePct;
+            _toggleListsKeybind      = toggleListsKeybind;
             _onResetScale            = onResetScale;
         }
 
@@ -201,7 +205,29 @@ namespace GW2app
                 Parent   = buildPanel,
             };
             resetBtn.Click += (s, e) => _onResetScale();
-            int rightBottom = ry + 6 + 26;
+            ry += 6 + 26 + SectionGap; // past the reset button, into Controls
+
+            // ===================== CONTROLS (right column, below Sizing) =====================
+            new Label
+            {
+                Text          = "Controls",
+                Font          = GameService.Content.DefaultFont18,
+                TextColor     = Color.White,
+                AutoSizeWidth = true,
+                Location      = new Point(rightX, ry),
+                Parent        = buildPanel,
+            };
+            ry += SectionGap;
+
+            // Blish's built-in KeyBinding reassign control: click, then press the new combo.
+            var keybindAssigner = new KeybindingAssigner(_toggleListsKeybind.Value)
+            {
+                KeyBindingName = "Show/hide all lists",
+                Location       = new Point(rightX, ry),
+                Width          = columnWidth,
+                Parent         = buildPanel,
+            };
+            int rightBottom = ry + Math.Max(30, keybindAssigner.Height);
 
             // ===================== BOTTOM: brand button =====================
             int bottomY = Math.Max(leftBottom, rightBottom) + 24;

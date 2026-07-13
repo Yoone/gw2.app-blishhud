@@ -22,16 +22,16 @@ namespace GW2app
             _cornerIcon = new CornerIcon()
             {
                 Icon = _iconTexture,
-                BasicTooltipText = "GW2.app (Not connected)",
+                BasicTooltipText = "GW2.app (not connected)",
                 Priority = 1645843523,
                 Parent = GameService.Graphics.SpriteScreen
             };
 
             _contextMenuStrip = new ContextMenuStrip();
-            _cornerIcon.Menu = _contextMenuStrip;
-            // Left click opens the info window. Right click is wired automatically by Blish
-            // via the Menu property and shows the lists menu.
-            _cornerIcon.Click += (s, e) => OpenInfoWindow();
+            // Handle both clicks ourselves (not _cornerIcon.Menu, which auto-opens at the
+            // cursor) so both anchor the menu below the icon.
+            _cornerIcon.Click += (s, e) => _contextMenuStrip.Show(_cornerIcon);
+            _cornerIcon.RightMouseButtonReleased += (s, e) => _contextMenuStrip.Show(_cornerIcon);
         }
 
         // ----- Info window (instructions + connection status) -----
@@ -188,8 +188,8 @@ namespace GW2app
 
             _infoStatusDot.Texture = connected ? _dotConnectedTexture : _dotNotConnectedTexture;
             _infoStatusLabel.Text = connected
-                ? ("Connected (" + listCount + (listCount == 1 ? " list)" : " lists)"))
-                : "Not connected";
+                ? ("connected (" + listCount + (listCount == 1 ? " list)" : " lists)"))
+                : "not connected";
             _infoStatusLabel.TextColor = connected
                 ? new Color(0x32, 0xcd, 0x32) // green
                 : new Color(0xdc, 0x14, 0x3c); // crimson
@@ -217,25 +217,53 @@ namespace GW2app
                 child.Dispose();
 
             bool connected = _hasActiveConnection != 0;
+            int hiddenCount = _peekHiddenIds.Count;
             if (_cornerIcon != null)
             {
                 if (connected)
                 {
                     int listCount = _catalog?.Lists?.Count ?? 0;
-                    _cornerIcon.BasicTooltipText = "GW2.app (Connected, " + listCount + (listCount == 1 ? " list)" : " lists)");
+                    string tip = "GW2.app (connected, " + listCount + (listCount == 1 ? " list" : " lists");
+                    // Show hidden count so a user who peeked lists away sees why on hover.
+                    if (hiddenCount > 0) tip += ", " + hiddenCount + " hidden";
+                    _cornerIcon.BasicTooltipText = tip + ")";
                 }
                 else
                 {
-                    _cornerIcon.BasicTooltipText = "GW2.app (Not connected)";
+                    _cornerIcon.BasicTooltipText = "GW2.app (not connected)";
                 }
+
+                // Swap to the "lists hidden" icon variant while anything is peeked away;
+                // falls back to the normal icon when that texture isn't loaded.
+                _cornerIcon.Icon = (hiddenCount > 0 && _iconHiddenTexture != null)
+                    ? _iconHiddenTexture
+                    : _iconTexture;
             }
             RefreshInfoStatus();
+
+            // First item: opens the info window.
+            var instructionsItem = _contextMenuStrip.AddMenuItem("Show instructions");
+            instructionsItem.Click += (s, e) => OpenInfoWindow();
+
+            // Show/hide toggle (checked = hidden); also the discoverable path for the hotkey.
+            // Only shown when there's at least one subscribed list to act on.
+            int visibleCount = 0;
+            foreach (var w in _listWindows.Values)
+                if (w.Window != null && w.Window.Visible) visibleCount++;
+            if (visibleCount > 0 || hiddenCount > 0)
+            {
+                var hideItem = _contextMenuStrip.AddMenuItem("Hide all subscribed lists");
+                hideItem.CanCheck = true;
+                // Set Checked before subscribing so a rebuild doesn't fire the handler and re-toggle.
+                hideItem.Checked = hiddenCount > 0;
+                hideItem.CheckedChanged += (s, e) => ToggleActiveListsVisibility();
+            }
 
             var lists = _catalog?.Lists;
 
             if (!connected)
             {
-                var item = _contextMenuStrip.AddMenuItem("(Not connected: no lists available)");
+                var item = _contextMenuStrip.AddMenuItem("(Not connected, no lists available)");
                 item.Enabled = false;
                 return;
             }
@@ -247,10 +275,9 @@ namespace GW2app
                 return;
             }
 
-            // Group lists by account name. Each account gets a disabled header item
-            // followed by its lists, indented. Accounts and lists are each sorted
-            // alphabetically (case-insensitive). Lists with no account name are
-            // bucketed under "" and rendered first, without a header.
+            // Group lists by account name: each account gets a disabled header followed by its
+            // lists, indented. Accounts and lists sorted case-insensitively. Lists with no
+            // account bucket under "" and render first under a "Lists with no account" header.
             var byAccount = new SortedDictionary<string, List<ListDto>>(StringComparer.OrdinalIgnoreCase);
             foreach (var list in lists)
             {
@@ -270,17 +297,15 @@ namespace GW2app
             int addedCount = 0;
             foreach (var kvp in byAccount)
             {
-                if (!string.IsNullOrEmpty(kvp.Key))
-                {
-                    var header = _contextMenuStrip.AddMenuItem(kvp.Key);
-                    header.Enabled = false;
-                }
+                var headerText = string.IsNullOrEmpty(kvp.Key) ? "Lists with no account" : kvp.Key;
+                var header = _contextMenuStrip.AddMenuItem(headerText);
+                header.Enabled = false;
+
                 foreach (var list in kvp.Value.OrderBy(l => l.Name ?? l.Id, StringComparer.OrdinalIgnoreCase))
                 {
                     var listId = list.Id;
                     var name = list.Name ?? list.Id;
-                    var label = string.IsNullOrEmpty(kvp.Key) ? name : "   " + name;
-                    var item = _contextMenuStrip.AddMenuItem(label);
+                    var item = _contextMenuStrip.AddMenuItem("   " + name);
                     item.Click += (s, e) => OpenListWindow(listId);
                     addedCount++;
                 }
@@ -298,6 +323,9 @@ namespace GW2app
 
         private void OpenListWindow(string listId)
         {
+            // Opening a list clears the hidden state: the other peeked lists come back too.
+            RestorePeekedLists();
+
             if (_listWindows.TryGetValue(listId, out var existing))
             {
                 if (!existing.Window.Visible) existing.Window.Show();
@@ -353,12 +381,15 @@ namespace GW2app
 
             EventHandler<EventArgs> onHidden = (s, e) =>
             {
+                // Peek hide is visual only: skip the persist + resubscribe a real close does.
+                if (_suppressListVisibilityHandlers) return;
                 // User clicked X. Remove from auto-open set.
                 RemovePersisted(listId);
                 UpdateSubscriptions();
             };
             EventHandler<EventArgs> onShown = (s, e) =>
             {
+                if (_suppressListVisibilityHandlers) return;
                 // Window opened (new or reopened from menu). Add to auto-open set.
                 AddPersisted(listId);
                 UpdateSubscriptions();
@@ -370,6 +401,8 @@ namespace GW2app
                 window.Shown -= onShown;
                 window.Disposed -= onDisposed;
                 _listWindows.Remove(listId);
+                // Drop from the peek set too, so it doesn't go stale on dispose.
+                _peekHiddenIds.Remove(listId);
                 // Programmatic dispose (disconnect / unload). Do NOT touch persisted set.
                 UpdateSubscriptions();
             };
@@ -742,6 +775,9 @@ namespace GW2app
                 var capturedUrl = url;
                 image.Click += (s, e) => OpenUrlInBrowser(capturedUrl);
             }
+
+            // Right-click context menu for the row (see AttachEntryContextMenu).
+            AttachEntryContextMenu(image, listId, index, entryDto);
 
             // Hovercard: only attach for entries the website actually exposes one for.
             // (per protocol: `has_hover_card === true` in the latest state).
@@ -1363,7 +1399,10 @@ namespace GW2app
             var subs = new HashSet<string>();
             foreach (var kvp in _listWindows)
             {
-                if (kvp.Value.Window != null && kvp.Value.Window.Visible)
+                // Peeked-hidden windows still count as subscribed: a peek is visual only, so
+                // an unrelated refresh here must not unsubscribe them and force a reload.
+                if (kvp.Value.Window != null &&
+                    (kvp.Value.Window.Visible || _peekHiddenIds.Contains(kvp.Key)))
                     subs.Add(kvp.Key);
             }
 
@@ -1384,6 +1423,63 @@ namespace GW2app
 
             _lastSubscribedIds = subs;
             _ = SendSubscribeAsync(subs.ToList());
+        }
+
+        private void OnToggleListsKeybind(object sender, EventArgs e) => ToggleActiveListsVisibility();
+
+        // Show/hide toggle: hides every visible list window, or restores the ones we hid.
+        // Purely visual - hidden windows stay subscribed, so they come back instantly.
+        // Suppresses the Shown/Hidden handlers so the persisted set is untouched.
+        private void ToggleActiveListsVisibility()
+        {
+            if (_peekHiddenIds.Count > 0)
+            {
+                RestorePeekedLists();
+                return;
+            }
+
+            _suppressListVisibilityHandlers = true;
+            try
+            {
+                foreach (var kvp in _listWindows)
+                {
+                    if (kvp.Value.Window != null && kvp.Value.Window.Visible)
+                    {
+                        _peekHiddenIds.Add(kvp.Key);
+                        // Set Visible directly, not Hide(): Hide() fades out and fires Hidden
+                        // on a later frame, racing the suppression flag on a fast double-press
+                        // (it lands after the flag clears and wrongly unsubscribes). Direct
+                        // assignment is synchronous, so the flag always covers it.
+                        kvp.Value.Window.Visible = false;
+                    }
+                }
+            }
+            finally { _suppressListVisibilityHandlers = false; }
+
+            // Rebuild the corner menu (new label / hidden count), deferred to next Update:
+            // rebuilding from the menu item's own Click would dispose it mid-event.
+            _contextMenuRebuildPending = true;
+        }
+
+        // Restore every window the toggle hid and clear the hidden state. No-op when nothing
+        // is hidden. Peeked windows stayed subscribed, so this is a pure visibility restore.
+        private void RestorePeekedLists()
+        {
+            if (_peekHiddenIds.Count == 0) return;
+
+            _suppressListVisibilityHandlers = true;
+            try
+            {
+                // Direct assignment, not Show(): symmetric with the hide path, and sidesteps
+                // Show()'s "already visible" no-op guard, which wouldn't cancel a running fade-out.
+                foreach (var id in _peekHiddenIds)
+                    if (_listWindows.TryGetValue(id, out var entry) && entry.Window != null)
+                        entry.Window.Visible = true;
+            }
+            finally { _suppressListVisibilityHandlers = false; }
+
+            _peekHiddenIds.Clear();
+            _contextMenuRebuildPending = true;
         }
 
         private void RestorePersistedOpenLists()
@@ -1497,6 +1593,59 @@ namespace GW2app
             catch (Exception e)
             {
                 Logger.Warn(e, "Failed to copy chat link.");
+            }
+        }
+
+        // Per-entry right-click menu, created lazily so entries with no applicable action
+        // stay menu-less. Add more AddItem(...) blocks below as actions apply.
+        private void AttachEntryContextMenu(Image image, string listId, int index, EntryDto entryDto)
+        {
+            if (image == null) return;
+
+            ContextMenuStrip menu = null;
+
+            // Create the menu on first item, so no menu is attached when no action applies.
+            ContextMenuStripItem AddItem(string label, Action onClick)
+            {
+                if (menu == null) menu = new ContextMenuStrip();
+                var item = menu.AddMenuItem(label);
+                item.Click += (s, e) => onClick();
+                return item;
+            }
+
+            // "Copy name": whenever the entry has a display name.
+            var entryName = entryDto?.Name;
+            if (!string.IsNullOrEmpty(entryName))
+            {
+                var capturedName = entryName;
+                AddItem("Copy name", () => CopyNameToClipboard(capturedName));
+            }
+
+            if (menu == null) return; // nothing to offer
+
+            image.Menu = menu;
+            // The menu isn't a child of the panel, so dispose it explicitly to avoid a leak per row.
+            image.Disposed += (s, e) => { try { menu.Dispose(); } catch { } };
+        }
+
+        private async void CopyNameToClipboard(string name)
+        {
+            if (string.IsNullOrEmpty(name)) return;
+            try
+            {
+                var ok = await ClipboardUtil.WindowsClipboardService.SetTextAsync(name);
+                if (!ok)
+                {
+                    Logger.Warn($"Clipboard set returned false for entry name.");
+                    return;
+                }
+                ScreenNotification.ShowNotification(
+                    "Name copied",
+                    ScreenNotification.NotificationType.Info);
+            }
+            catch (Exception e)
+            {
+                Logger.Warn(e, "Failed to copy entry name.");
             }
         }
 

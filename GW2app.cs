@@ -11,11 +11,13 @@ using System.Threading.Tasks;
 using Blish_HUD;
 using Blish_HUD.Content;
 using Blish_HUD.Controls;
+using Blish_HUD.Input;
 using Blish_HUD.Modules;
 using Blish_HUD.Modules.Managers;
 using Blish_HUD.Settings;
 using Microsoft.Xna.Framework;
 using Microsoft.Xna.Framework.Graphics;
+using Microsoft.Xna.Framework.Input;
 
 namespace GW2app
 {
@@ -34,6 +36,8 @@ namespace GW2app
         private const int CloseCodeSuperseded = 4000;
         private const int CloseCodeHandshakeTimeout = 4001;
         private const int CloseCodeProtocolViolation = 4002;
+        // A poll client silent this long counts as gone (~10 polls at ~2/s).
+        private static readonly TimeSpan PollSessionTimeout = TimeSpan.FromSeconds(5);
 
         internal SettingsManager SettingsManager => this.ModuleParameters.SettingsManager;
         internal ContentsManager ContentsManager => this.ModuleParameters.ContentsManager;
@@ -85,6 +89,15 @@ namespace GW2app
                 () => "Scales list window dimensions and entry images");
             _uiScalePct.SetRange(75, 125);
 
+            var controls = settings.AddSubCollection("controls", true, () => "Controls");
+            // Defaults to unbound (Keys.None) to avoid colliding with GW2/Blish keybinds;
+            // enabled and hooked in Initialize.
+            _toggleListsKeybind = controls.DefineSetting(
+                "toggleListsVisibility",
+                new KeyBinding(Keys.None),
+                () => "Show/hide all lists",
+                () => "Hides or restores every open list window. Purely visual: hidden lists stay connected and reappear instantly.");
+
             var internalSettings = settings.AddSubCollection("internal");
             _persistedOpenListsJson = internalSettings.DefineSetting("openLists", "[]");
             // Hidden setting: max waypoints per chat-link copy chunk. 1-15. At 15
@@ -108,6 +121,7 @@ namespace GW2app
                 _showAccountName,
                 _showCopyWaypointsButton,
                 _uiScalePct,
+                _toggleListsKeybind,
                 onResetScale: () => { if (_uiScalePct != null) _uiScalePct.Value = 100; });
         }
 
@@ -123,8 +137,10 @@ namespace GW2app
             get
             {
                 WebSocket ws;
-                lock (_clientLock) { ws = _activeClient; }
-                return ws != null && ws.State == WebSocketState.Open;
+                PollChannel poll;
+                lock (_clientLock) { ws = _activeClient; poll = _activePollSession; }
+                if (ws != null && ws.State == WebSocketState.Open) { return true; }
+                return poll != null && !poll.Superseded;
             }
         }
 
@@ -158,6 +174,14 @@ namespace GW2app
             _iconTexture = ContentsManager.GetTexture("gw2app-icon.png");
             CreateCornerIcon();
             RebuildContextMenu();
+
+            // KeyBindings default to disabled; enable it. Activated fires on the update
+            // thread, so the handler can touch UI directly.
+            if (_toggleListsKeybind?.Value != null)
+            {
+                _toggleListsKeybind.Value.Enabled = true;
+                _toggleListsKeybind.Value.Activated += OnToggleListsKeybind;
+            }
         }
 
         protected override async Task LoadAsync()
@@ -167,6 +191,12 @@ namespace GW2app
             _logoTexture = ContentsManager.GetTexture("gw2app-logo.png");
             _dotConnectedTexture = ContentsManager.GetTexture("connected.png");
             _dotNotConnectedTexture = ContentsManager.GetTexture("not-connected.png");
+            // Corner-icon variant shown while lists are hidden. Guard against the error
+            // texture GetTexture returns for a missing file, so a bad asset just keeps the
+            // normal icon instead of a pink placeholder.
+            var hiddenIcon = ContentsManager.GetTexture("gw2app-icon-lists-hidden.png");
+            if (hiddenIcon != null && hiddenIcon != ContentService.Textures.Error)
+                _iconHiddenTexture = hiddenIcon;
             // Prewarm the GW2 window background so it's ready when the user picks
             // "Game texture" in the settings dropdown.
             AsyncTexture2D.FromAssetId(155997);
@@ -270,6 +300,8 @@ namespace GW2app
             bool catalogChanged = false;
             var dirtyLists = new HashSet<string>();
 
+            ReapStalePollSession();
+
             while (_incomingMessages.TryDequeue(out var msg))
             {
                 try
@@ -340,6 +372,13 @@ namespace GW2app
                 // updates even for lists that didn't otherwise change.
                 foreach (var id in _listWindows.Keys)
                     dirtyLists.Add(id);
+            }
+
+            // Menu rebuild requested by a toggle. Skip if catalogChanged already rebuilt it this tick.
+            if (_contextMenuRebuildPending)
+            {
+                _contextMenuRebuildPending = false;
+                if (!catalogChanged) RebuildContextMenu();
             }
 
             // Loading-timeout sweep. Lists that have been waiting > LoadingTimeoutSeconds
@@ -461,6 +500,8 @@ namespace GW2app
             if (entry.Index < 0 || entry.Index >= list.Entries.Count) return false;
 
             var e = list.Entries[entry.Index];
+            // Guard against an empty payload so we never wipe the last known name.
+            if (!string.IsNullOrEmpty(entry.Name)) e.Name = entry.Name;
             e.Completed = entry.Completed;
             e.AutoCompleted = entry.AutoCompleted;
             e.HasHoverCard = entry.HasHoverCard;
@@ -607,6 +648,8 @@ namespace GW2app
                 _showAccountName.SettingChanged -= OnShowAccountNameChanged;
             if (_showCopyWaypointsButton != null)
                 _showCopyWaypointsButton.SettingChanged -= OnShowCopyWaypointsButtonChanged;
+            if (_toggleListsKeybind?.Value != null)
+                _toggleListsKeybind.Value.Activated -= OnToggleListsKeybind;
 
             try { _httpCts?.Cancel(); } catch { }
             try { _httpListener?.Stop(); } catch { }
@@ -623,6 +666,8 @@ namespace GW2app
                 try { _activeClientCts?.Cancel(); } catch { }
                 try { _activeClientCts?.Dispose(); } catch { }
                 _activeClientCts = null;
+                _activePollSession?.MarkSuperseded();
+                _activePollSession = null;
             }
             if (activeClient != null)
             {
@@ -649,6 +694,7 @@ namespace GW2app
             _hoverImageCache.Clear();
 
             _iconTexture?.Dispose();
+            _iconHiddenTexture?.Dispose();
             _cornerSourceTexture?.Dispose();
             _logoTexture?.Dispose();
             _dotConnectedTexture?.Dispose();
@@ -664,6 +710,8 @@ namespace GW2app
         internal static GW2app GW2appInstance;
 
         private Texture2D _iconTexture;
+        // Corner-icon variant shown while lists are hidden. Null when the asset isn't bundled.
+        private Texture2D _iconHiddenTexture;
         private Texture2D _cornerSourceTexture;
         private Texture2D _logoTexture;
         private Texture2D _dotConnectedTexture;
@@ -685,6 +733,12 @@ namespace GW2app
         private readonly object _clientLock = new object();
         private WebSocket _activeClient;
         private CancellationTokenSource _activeClientCts;
+        // Active polling client, if any. At most one of _activeClient / _activePollSession
+        // is set; either kind supersedes the other.
+        private PollChannel _activePollSession;
+        // Most recently superseded poll session; its last in-flight poll gets a 4000 close
+        // instead of re-registering and stealing the connection back.
+        private string _lastSupersededPollId;
         private int _hasActiveConnection;
         private int _connectionStateDirty;
 
@@ -727,11 +781,22 @@ namespace GW2app
         // out of UI event handlers (e.g. slider ValueChanged) so we don't dispose the
         // very control that fired the event.
         private readonly HashSet<string> _deferredRefreshes = new HashSet<string>();
+        // Set by ToggleActiveListsVisibility, processed in Update so the menu is never
+        // rebuilt (disposing its items) from inside a menu item's own Click.
+        private bool _contextMenuRebuildPending;
         private SettingEntry<GW2appWindow.WindowTheme> _windowTheme;
         private SettingEntry<int> _bgOpacityPct;
         private SettingEntry<int> _uiScalePct;
         private SettingEntry<bool> _showAccountName;
         private SettingEntry<bool> _showCopyWaypointsButton;
+        private SettingEntry<KeyBinding> _toggleListsKeybind;
+
+        // List ids hidden by the show/hide toggle. In-memory only, never persisted, so an
+        // accidental hide never survives a restart or reconnect.
+        private readonly HashSet<string> _peekHiddenIds = new HashSet<string>();
+        // Set while the toggle drives visibility so the Shown/Hidden handlers skip their
+        // persist + resubscribe side effects (a peek is visual only).
+        private bool _suppressListVisibilityHandlers;
 
         private readonly ConcurrentQueue<IncomingMessage> _incomingMessages = new ConcurrentQueue<IncomingMessage>();
     }

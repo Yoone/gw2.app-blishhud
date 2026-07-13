@@ -54,6 +54,8 @@ namespace GW2app
 
     internal class EntryDto
     {
+        // Display name (website "Rename" field). Always present per protocol; used by "Copy name".
+        [JsonProperty("name")] public string Name;
         [JsonProperty("completed")] public bool Completed;
         [JsonProperty("autoCompleted")] public bool AutoCompleted;
         // Optional. Mirrors the website's entry-type discriminator. Used in the
@@ -70,6 +72,8 @@ namespace GW2app
         [JsonProperty("type")] public string Type;
         [JsonProperty("listId")] public string ListId;
         [JsonProperty("index")] public int Index;
+        // Mirrors EntryDto.Name; re-emitted when the name changes. Always present per protocol.
+        [JsonProperty("name")] public string Name;
         [JsonProperty("completed")] public bool Completed;
         [JsonProperty("autoCompleted")] public bool AutoCompleted;
         [JsonProperty("mime")] public string Mime;

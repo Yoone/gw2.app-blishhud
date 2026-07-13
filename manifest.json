@@ -1,11 +1,11 @@
 {
   "name": "GW2.app",
-  "version": "1.0.2",
+  "version": "1.1.0",
   "namespace": "app.gw2",
   "package": "GW2app.dll",
   "manifest_version": 1,
 
-  "description": "Access your GW2.app lists in game to work on your goals. Open gw2.app/blish to get started!\n\nSupports waypoint copying, achievement tracking, timers, story progress, equipped gear, Trading Post price/order/history watchers, and much more.",
+  "description": "Access your GW2.app lists in game to work on your goals. Open gw2.app/blish to get started!\n\nSupports waypoint copying, achievement tracking, timers, story progress, equipped gear, Trading Post price/order/history watchers, daily fractals, Wizard's Vault, PSNA, and much more.",
   "dependencies": {
     "bh.blishhud": ">=1.2.0"
   },
