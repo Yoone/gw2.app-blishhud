@@ -188,8 +188,8 @@ namespace GW2app
 
             _infoStatusDot.Texture = connected ? _dotConnectedTexture : _dotNotConnectedTexture;
             _infoStatusLabel.Text = connected
-                ? ("connected (" + listCount + (listCount == 1 ? " list)" : " lists)"))
-                : "not connected";
+                ? ("Connected (" + listCount + (listCount == 1 ? " list)" : " lists)"))
+                : "Not connected";
             _infoStatusLabel.TextColor = connected
                 ? new Color(0x32, 0xcd, 0x32) // green
                 : new Color(0xdc, 0x14, 0x3c); // crimson

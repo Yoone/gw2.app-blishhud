@@ -55,11 +55,34 @@ namespace GW2app
             }
         }
 
+        // On some Wine/Linux setups reading HttpListenerRequest.IsWebSocketRequest throws
+        // TypeInitializationException (native WebSocketProtocolComponent is "Not implemented").
+        // A platform that can't detect a WS upgrade can't serve one either, so treat a throw
+        // as "not a WebSocket request" and fall through to the HTTP polling path. Probed once.
+        private static int _wsDetectionState; // 0 = unknown, 1 = works, 2 = unavailable
+
+        private static bool IsWebSocketRequestSafe(HttpListenerContext ctx)
+        {
+            if (Volatile.Read(ref _wsDetectionState) == 2) return false;
+            try
+            {
+                bool isWs = ctx.Request.IsWebSocketRequest;
+                Volatile.Write(ref _wsDetectionState, 1);
+                return isWs;
+            }
+            catch (Exception e)
+            {
+                if (Interlocked.Exchange(ref _wsDetectionState, 2) != 2)
+                    Logger.Info(e, "WebSocket detection unavailable on this platform; serving HTTP polling only.");
+                return false;
+            }
+        }
+
         private async Task HandleHttpRequest(HttpListenerContext ctx)
         {
             try
             {
-                if (ctx.Request.IsWebSocketRequest)
+                if (IsWebSocketRequestSafe(ctx))
                 {
                     // CORS does not gate WebSockets, so check Origin on the handshake.
                     var wsOrigin = ctx.Request.Headers["Origin"];
