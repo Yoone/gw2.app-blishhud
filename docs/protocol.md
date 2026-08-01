@@ -313,6 +313,59 @@ apply there.
 
 ## Versioning
 
-`protocol: 1` on `state` is the wire-format version. Incompatible changes
-bump it. The server validates on the first message of each connection and
-closes with `4002` on mismatch.
+The wire format is versioned so features can be added without breaking older
+peers in either direction.
+
+- **Client to server (`state.protocol`):** the client always sends `1`, the
+  baseline every server accepts. It does NOT bump this when it gains support for
+  newer features, because an older server rejects any value but `1` (closing
+  `4002`). A server accepts any `protocol` from `1` up to the version it
+  implements, and closes `4002` outside that range.
+- **Server to client (`serverProtocol` in the poll response):** the server
+  advertises the version it implements. The client opts into post-v1 features
+  only when it sees `serverProtocol >= N` for the feature's version. An older
+  server omits the field, so the client stays on v1 behavior; an older client
+  ignores the field.
+
+So negotiation is one-directional: the server advertises, the client gates.
+Neither a new client against an old server nor an old client against a new
+server breaks.
+
+> `serverProtocol` is currently sent on the HTTP polling response only, since
+> fragmentation (the sole post-v1 feature so far) applies only to that
+> transport. Add it to the WebSocket handshake if a future feature needs it there.
+
+### Post-v1 features
+
+Each entry is gated on the server advertising at least the listed version.
+Document every new wire feature here when bumping `ProtocolVersion`.
+
+#### v2: request-body fragmentation (polling transport)
+
+Wine's `http.sys` silently drops an HTTP request whose body does not arrive in a
+single socket read, so a large client to server poll body (notably a
+`hover_image`, which can be a few hundred KiB) never reaches the module. To stay
+under that limit, the client MAY split any single outbound message across
+several poll bodies and the server reassembles it.
+
+A fragment replaces the normal message in the poll's `messages` array:
+
+```json
+{ "__frag": { "id": "<frame id>", "seq": 0, "final": false }, "data": "<slice>" }
+```
+
+- `data` is a contiguous slice of the original message's JSON text. Concatenating
+  every fragment's `data` in `seq` order yields the original message JSON, which
+  is then parsed normally.
+- `id` identifies one logical message; `seq` is 0-based and contiguous; `final`
+  marks the last slice.
+- Fragments of one `id` arrive in order on the single serial poll lane. The
+  server buffers by `id` and, on `final`, reassembles and dispatches. A new `id`
+  arriving mid-stream (the client superseded the frame, e.g. a newer hover frame)
+  or an out-of-order `seq` discards the partial buffer.
+- The client discovers the largest body the server accepts adaptively: it sends
+  optimistically large and, on a rejected body, shrinks its per-body ceiling to
+  80% of the slice it just tried (floor 10 KiB) and retries smaller until a slice
+  lands, then reuses that size.
+- Slicing is by the message's JSON text; payloads are ASCII (base64 image data
+  plus ASCII JSON), so byte and character boundaries coincide.

@@ -33,25 +33,89 @@ namespace GW2app
             }
 
             _httpCts = new CancellationTokenSource();
-            Task.Run(() => HttpListenLoop(_httpCts.Token));
+            // Capture this listener/token so the loop only ever touches its own
+            // instance; RestartHttpListener can stop this one without the old
+            // loop racing onto the replacement.
+            var listener = _httpListener;
+            var token = _httpCts.Token;
+            Task.Run(() => HttpListenLoop(listener, token));
             Logger.Info($"GW2.app HTTP listener started on port {HttpPort}");
         }
 
-        private async Task HttpListenLoop(CancellationToken ct)
+        private async Task HttpListenLoop(HttpListener listener, CancellationToken ct)
         {
-            while (!ct.IsCancellationRequested && _httpListener != null && _httpListener.IsListening)
+            while (!ct.IsCancellationRequested && listener.IsListening)
             {
                 HttpListenerContext ctx;
                 try
                 {
-                    ctx = await _httpListener.GetContextAsync();
+                    ctx = await listener.GetContextAsync();
                 }
-                catch (Exception)
+                catch (Exception e)
                 {
-                    break;
+                    // Stop only when this listener is actually gone (shutdown, or
+                    // a RestartHttpListener that replaced it). A one-off failure
+                    // to accept, which Wine's HttpApi does raise, used to end the
+                    // loop and leave the module running with nothing serving HTTP
+                    // until the next game restart.
+                    if (ct.IsCancellationRequested || !listener.IsListening)
+                    {
+                        break;
+                    }
+                    Logger.Warn(e, "Failed to accept an HTTP request; still listening.");
+                    await Task.Delay(250);
+                    continue;
                 }
 
                 _ = Task.Run(() => HandleHttpRequest(ctx));
+            }
+        }
+
+        // Cooldown so a transport that keeps re-wedging can't thrash the listener.
+        private static readonly TimeSpan ListenerRestartCooldown = TimeSpan.FromSeconds(5);
+        private DateTime _lastListenerRestartUtc = DateTime.MinValue;
+
+        // Wine's HttpListener can wedge its underlying request queue under load
+        // (large hover-image poll bodies are the likeliest trigger) with NO
+        // exception surfacing to managed code: requests just stop completing and
+        // the poll session times out. The listener still reports IsListening, so
+        // nothing detects it and it never recovers on its own. Recreating the
+        // listener clears the native state, which is exactly what a manual module
+        // restart does. Guarded by a cooldown and by _unloading.
+        private void RestartHttpListener()
+        {
+            if (_unloading) { return; }
+            var now = DateTime.UtcNow;
+            if (now - _lastListenerRestartUtc < ListenerRestartCooldown) { return; }
+            _lastListenerRestartUtc = now;
+
+            Logger.Info("Recreating the HTTP listener to recover a wedged connection.");
+            try { _httpCts?.Cancel(); } catch { }
+            try { _httpListener?.Stop(); } catch { }
+            try { _httpListener?.Close(); } catch { }
+            _httpListener = null;
+            try { _httpCts?.Dispose(); } catch { }
+            _httpCts = null;
+            try
+            {
+                StartHttpServer();
+            }
+            catch (Exception e)
+            {
+                Logger.Warn(e, "Failed to recreate the HTTP listener.");
+            }
+        }
+
+        // Per Update tick: if the listener has died outright (its loop broke, or
+        // a recreate failed) revive it. The wedge itself keeps IsListening true,
+        // so the poll-timeout reap is what catches that case; this only backstops
+        // an actually-dead listener so HTTP is never left permanently silent.
+        private void EnsureHttpListenerAlive()
+        {
+            if (_unloading) { return; }
+            if (_httpListener == null || !_httpListener.IsListening)
+            {
+                RestartHttpListener();
             }
         }
 
@@ -78,8 +142,50 @@ namespace GW2app
             }
         }
 
+        // Finish a response, with the body length declared up front. Without a
+        // length the listener uses chunked transfer encoding, which Wine's
+        // HttpApi cannot complete: disposing the response stream aborts the
+        // request instead (SEHException out of HttpCancelHttpRequest), so the
+        // browser gets no bytes at all and reports an empty response. Closing
+        // can still throw once the request is gone, which is not actionable,
+        // hence the swallow.
+        //
+        // Each response also ends its connection. Wine's listener stops
+        // serving a connection after it has answered a few requests on it,
+        // and the browser then gets empty responses for everything it sends
+        // on that socket until it gives up on it. One connection per request
+        // is a negligible cost over loopback and takes the reuse, and the
+        // whole failure mode with it, off the table.
+        private static void CloseResponse(HttpListenerContext ctx, int status, string contentType = null, byte[] body = null)
+        {
+            try
+            {
+                ctx.Response.StatusCode = status;
+                ctx.Response.KeepAlive = false;
+                if (contentType != null) { ctx.Response.ContentType = contentType; }
+                ctx.Response.ContentLength64 = body?.Length ?? 0;
+                if (body != null && body.Length > 0)
+                {
+                    ctx.Response.OutputStream.Write(body, 0, body.Length);
+                }
+                ctx.Response.Close();
+                Logger.Debug($"HTTP response {status} sent ({body?.Length ?? 0} bytes).");
+            }
+            catch (Exception e)
+            {
+                Logger.Debug(e, $"Writing HTTP response {status} ({body?.Length ?? 0} bytes) failed.");
+                try { ctx.Response.Abort(); } catch { }
+            }
+        }
+
         private async Task HandleHttpRequest(HttpListenerContext ctx)
         {
+            // Logged before any branching so a request that dies in the
+            // listener below managed code (Wine aborting a large or slow poll
+            // body) is still visible as an accepted request with its declared
+            // size, distinguishing it from one that reached a handler.
+            Logger.Debug($"HTTP {ctx.Request.HttpMethod} {ctx.Request.Url?.AbsolutePath} " +
+                $"len={ctx.Request.ContentLength64} from {ctx.Request.RemoteEndPoint}");
             try
             {
                 if (IsWebSocketRequestSafe(ctx))
@@ -89,8 +195,7 @@ namespace GW2app
                     if (!IsAllowedOrigin(wsOrigin))
                     {
                         Logger.Warn($"Rejecting WS handshake from disallowed origin '{wsOrigin}' ({ctx.Request.RemoteEndPoint})");
-                        ctx.Response.StatusCode = 403;
-                        ctx.Response.Close();
+                        CloseResponse(ctx, 403);
                         return;
                     }
                     await HandleWebSocket(ctx);
@@ -101,8 +206,7 @@ namespace GW2app
 
                 if (ctx.Request.HttpMethod == "OPTIONS")
                 {
-                    ctx.Response.StatusCode = 204;
-                    ctx.Response.Close();
+                    CloseResponse(ctx, 204);
                     return;
                 }
 
@@ -114,23 +218,23 @@ namespace GW2app
                     if (!IsAllowedOrigin(pollOrigin))
                     {
                         Logger.Warn($"Rejecting poll from disallowed origin '{pollOrigin}' ({ctx.Request.RemoteEndPoint})");
-                        ctx.Response.StatusCode = 403;
-                        ctx.Response.Close();
+                        CloseResponse(ctx, 403);
                         return;
                     }
                     await HandlePoll(ctx);
                     return;
                 }
 
-                ctx.Response.StatusCode = 426;
-                var msg = Encoding.UTF8.GetBytes("This endpoint expects a WebSocket connection.");
-                await ctx.Response.OutputStream.WriteAsync(msg, 0, msg.Length);
-                ctx.Response.Close();
+                // Also where a WebSocket upgrade lands on a platform whose
+                // listener cannot detect (so cannot serve) one: the browser
+                // gets a prompt failure and the client falls back to polling.
+                CloseResponse(ctx, 426, "text/plain; charset=utf-8",
+                    Encoding.UTF8.GetBytes("This endpoint expects a WebSocket connection."));
             }
             catch (Exception e)
             {
                 Logger.Warn(e, "Error handling HTTP request.");
-                try { ctx.Response.StatusCode = 500; ctx.Response.Close(); } catch { }
+                CloseResponse(ctx, 500);
             }
         }
 
@@ -149,6 +253,9 @@ namespace GW2app
             ctx.Response.Headers["Access-Control-Allow-Methods"] = "GET, POST, OPTIONS";
             ctx.Response.Headers["Access-Control-Allow-Headers"] = "Upgrade, Connection, Content-Type";
             ctx.Response.Headers["Access-Control-Allow-Private-Network"] = "true";
+            // Without this the browser's default (5s) makes it re-run the
+            // preflight throughout a polling session.
+            ctx.Response.Headers["Access-Control-Max-Age"] = "86400";
         }
 
         private static bool IsAllowedOrigin(string origin)
@@ -486,7 +593,11 @@ namespace GW2app
                     var protoTok = root["protocol"];
                     if (protoTok == null) throw new ProtocolException("state missing 'protocol' field");
                     int proto = protoTok.Value<int>();
-                    if (proto != ProtocolVersion) throw new ProtocolException($"unsupported protocol version {proto}");
+                    // Accept any client protocol from 1 to what we implement. The
+                    // client sends 1 for backward compatibility with older modules
+                    // (which reject anything but 1) and opts into newer features
+                    // off our advertised serverProtocol, not off what it sends.
+                    if (proto < 1 || proto > ProtocolVersion) throw new ProtocolException($"unsupported protocol version {proto}");
                     var state = root.ToObject<StateMessage>() ?? new StateMessage();
                     return new IncomingMessage { Kind = MessageKind.State, State = state };
                 }
@@ -529,8 +640,7 @@ namespace GW2app
             catch (Exception e)
             {
                 Logger.Warn(e, "Failed to read poll body.");
-                ctx.Response.StatusCode = 400;
-                ctx.Response.Close();
+                CloseResponse(ctx, 400);
                 return;
             }
 
@@ -547,15 +657,13 @@ namespace GW2app
             catch (Exception e)
             {
                 Logger.Warn(e, "Bad poll request JSON.");
-                ctx.Response.StatusCode = 400;
-                ctx.Response.Close();
+                CloseResponse(ctx, 400);
                 return;
             }
 
             if (string.IsNullOrEmpty(session))
             {
-                ctx.Response.StatusCode = 400;
-                ctx.Response.Close();
+                CloseResponse(ctx, 400);
                 return;
             }
 
@@ -574,7 +682,7 @@ namespace GW2app
                     }
                 }
                 if (cleared) { MarkPollDisconnected(); }
-                await WritePollResponse(ctx, null, null);
+                WritePollResponse(ctx, null, null);
                 return;
             }
 
@@ -621,7 +729,7 @@ namespace GW2app
 
             if (returnSuperseded)
             {
-                await WritePollResponse(ctx, null, MakeClose(CloseCodeSuperseded, "superseded"));
+                WritePollResponse(ctx, null, MakeClose(CloseCodeSuperseded, "superseded"));
                 return;
             }
             if (replacedPrevious)
@@ -637,8 +745,26 @@ namespace GW2app
             bool superseded = false;
             foreach (var tok in inbound)
             {
+                // Reassemble a fragmented message. The client splits a message
+                // too big for the listener's per-body limit (Wine's http.sys
+                // drops an oversized body) into ordered slices; each arrives as
+                // {"__frag":{id,seq,final},"data":"<slice>"}. AcceptFragment
+                // returns the full message JSON once the final slice lands, or
+                // null while more are pending.
+                string messageJson;
+                if (tok is JObject fobj && fobj["__frag"] != null)
+                {
+                    var reassembled = channel.AcceptFragment(fobj);
+                    if (reassembled == null) { continue; }
+                    messageJson = reassembled;
+                }
+                else
+                {
+                    messageJson = tok.ToString(Formatting.None);
+                }
+
                 IncomingMessage parsed;
-                try { parsed = ParseMessage(tok.ToString(Formatting.None)); }
+                try { parsed = ParseMessage(messageJson); }
                 catch (Exception e) { Logger.Warn(e, "Skipping bad poll message."); continue; }
 
                 // Ignore anything before this session's first `state` (like the
@@ -656,7 +782,7 @@ namespace GW2app
             }
 
             var outMsgs = channel.DrainOutbound();
-            await WritePollResponse(ctx, outMsgs, superseded ? MakeClose(CloseCodeSuperseded, "superseded") : null, resync);
+            WritePollResponse(ctx, outMsgs, superseded ? MakeClose(CloseCodeSuperseded, "superseded") : null, resync);
         }
 
         private static JObject MakeClose(int code, string reason)
@@ -664,7 +790,7 @@ namespace GW2app
             return new JObject { ["code"] = code, ["reason"] = reason };
         }
 
-        private static async Task WritePollResponse(HttpListenerContext ctx, List<string> messages, JObject close, bool resync = false)
+        private static void WritePollResponse(HttpListenerContext ctx, List<string> messages, JObject close, bool resync = false)
         {
             var arr = new JArray();
             if (messages != null)
@@ -675,22 +801,13 @@ namespace GW2app
                 }
             }
             var root = new JObject { ["messages"] = arr, ["close"] = close ?? (JToken)JValue.CreateNull() };
+            // Advertise the version we implement so the client can opt into
+            // post-v1 features (e.g. fragmentation). Absent to older clients that
+            // ignore it, and absent from older modules so the client stays on v1.
+            root["serverProtocol"] = ProtocolVersion;
             if (resync) { root["resync"] = true; }
             var bytes = Encoding.UTF8.GetBytes(root.ToString(Formatting.None));
-            try
-            {
-                ctx.Response.StatusCode = 200;
-                ctx.Response.ContentType = "application/json";
-                await ctx.Response.OutputStream.WriteAsync(bytes, 0, bytes.Length);
-            }
-            catch (Exception e)
-            {
-                Logger.Warn(e, "Failed to write poll response.");
-            }
-            finally
-            {
-                try { ctx.Response.Close(); } catch { }
-            }
+            CloseResponse(ctx, 200, "application/json", bytes);
         }
 
         // Poll session ended (close beacon or timeout); mirrors the WS finally.
@@ -719,7 +836,15 @@ namespace GW2app
                     reaped = true;
                 }
             }
-            if (reaped) { MarkPollDisconnected(); }
+            if (reaped)
+            {
+                MarkPollDisconnected();
+                // A live poll client polls ~2/s, so a timeout means delivery
+                // wedged or the client vanished. Recreate the listener either
+                // way: it clears a wedge (what a manual module restart does) and
+                // is harmless when the client is simply gone.
+                RestartHttpListener();
+            }
         }
 
         // A website connected over the polling fallback: its outbound queue
@@ -733,6 +858,13 @@ namespace GW2app
             private volatile bool _superseded;
             private readonly ConcurrentQueue<string> _outbound = new ConcurrentQueue<string>();
 
+            // Reassembly state for the one fragmented message that can be in
+            // flight at a time (the poll lane is serial, so fragments arrive in
+            // order). A new id, or any out-of-order seq, discards the partial.
+            private string _fragId;
+            private int _fragNextSeq;
+            private StringBuilder _fragData;
+
             public PollChannel(string sessionId)
             {
                 SessionId = sessionId;
@@ -742,6 +874,43 @@ namespace GW2app
             public bool Superseded => _superseded;
             public void MarkSuperseded() { _superseded = true; }
             public void Enqueue(string json) { if (!_superseded) { _outbound.Enqueue(json); } }
+
+            // Feed one {"__frag":{id,seq,final},"data":...} slice. Returns the
+            // reassembled message JSON once the final slice completes an in-order
+            // set, else null. A superseded frame (new id mid-stream) or a gap
+            // just drops the partial and waits for a fresh id at seq 0.
+            public string AcceptFragment(JObject msg)
+            {
+                var f = msg["__frag"] as JObject;
+                if (f == null) { return null; }
+                var id = f["id"]?.Value<string>();
+                if (string.IsNullOrEmpty(id)) { return null; }
+                int seq = f["seq"]?.Value<int>() ?? -1;
+                bool final = f["final"]?.Value<bool>() ?? false;
+                var data = msg["data"]?.Value<string>() ?? "";
+
+                if (id != _fragId)
+                {
+                    if (seq != 0) { _fragId = null; return null; }
+                    _fragId = id;
+                    _fragNextSeq = 0;
+                    _fragData = new StringBuilder();
+                }
+                if (seq != _fragNextSeq)
+                {
+                    _fragId = null;
+                    _fragData = null;
+                    return null;
+                }
+                _fragData.Append(data);
+                _fragNextSeq++;
+                if (!final) { return null; }
+
+                var result = _fragData.ToString();
+                _fragId = null;
+                _fragData = null;
+                return result;
+            }
 
             public List<string> DrainOutbound()
             {

@@ -30,14 +30,23 @@ namespace GW2app
         // Base (100%) entry-image width. Effective DisplayWidth scales with UiScale.
         private const int BaseDisplayWidth = 400;
         private int DisplayWidth => (int)Math.Round(BaseDisplayWidth * UiScale);
-        private const int ProtocolVersion = 1;
+        // Protocol version the module implements and advertises to clients (as
+        // serverProtocol in the poll response). The module accepts any client
+        // protocol from 1 to this. Bump when adding a wire feature, and document
+        // it in docs/protocol.md. v2 adds request-body fragmentation, which the
+        // client uses only when it sees serverProtocol >= 2 (see AcceptFragment).
+        private const int ProtocolVersion = 2;
         private const int HandshakeTimeoutMs = 5000;
 
         private const int CloseCodeSuperseded = 4000;
         private const int CloseCodeHandshakeTimeout = 4001;
         private const int CloseCodeProtocolViolation = 4002;
-        // A poll client silent this long counts as gone (~10 polls at ~2/s).
-        private static readonly TimeSpan PollSessionTimeout = TimeSpan.FromSeconds(5);
+        // A poll client silent this long counts as gone. Kept well above the
+        // website's poll-failure grace so a transient Wine loopback stall (ports
+        // briefly exhausted by connection churn, seen recovering on its own in
+        // several seconds) rides out on the same session instead of forcing a
+        // reconnect and a full re-image.
+        private static readonly TimeSpan PollSessionTimeout = TimeSpan.FromSeconds(20);
 
         internal SettingsManager SettingsManager => this.ModuleParameters.SettingsManager;
         internal ContentsManager ContentsManager => this.ModuleParameters.ContentsManager;
@@ -297,10 +306,27 @@ namespace GW2app
 
         protected override void Update(GameTime gameTime)
         {
+            // Final backstop: no single tick may throw out of the module. Blish
+            // disables a module whose Update throws, so an unforeseen failure in
+            // message dispatch, list reconciliation, texture decode, or hover
+            // rendering degrades one frame instead of taking the module down.
+            try
+            {
+                UpdateTick(gameTime);
+            }
+            catch (Exception e)
+            {
+                Logger.Warn(e, "Unhandled error in Update tick.");
+            }
+        }
+
+        private void UpdateTick(GameTime gameTime)
+        {
             bool catalogChanged = false;
             var dirtyLists = new HashSet<string>();
 
             ReapStalePollSession();
+            EnsureHttpListenerAlive();
 
             while (_incomingMessages.TryDequeue(out var msg))
             {
