@@ -1,6 +1,6 @@
 {
   "name": "GW2.app",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "namespace": "app.gw2",
   "package": "GW2app.dll",
   "manifest_version": 1,
