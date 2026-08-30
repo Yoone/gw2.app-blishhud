@@ -664,6 +664,7 @@ namespace GW2app
                         {
                             if (!_completedSectionCollapsed.Add(capturedListId))
                                 _completedSectionCollapsed.Remove(capturedListId);
+                            WriteCollapsedCompleted();
                             RefreshListWindow(capturedListId);
                         });
                     y += btnHeight + 6;
@@ -1571,6 +1572,36 @@ namespace GW2app
         {
             var set = LoadPersistedSet();
             if (set.Remove(listId)) WritePersistedSet(set);
+        }
+
+        // Seeds _completedSectionCollapsed from the setting. Ids of lists the website no longer
+        // offers are harmless: nothing reads them, and the preference comes back if the list does.
+        private void RestoreCollapsedCompleted()
+        {
+            if (_persistedCollapsedCompletedJson == null) return;
+
+            var raw = _persistedCollapsedCompletedJson.Value ?? "[]";
+            try
+            {
+                var ids = JsonConvert.DeserializeObject<List<string>>(raw) ?? new List<string>();
+                foreach (var id in ids)
+                    if (!string.IsNullOrEmpty(id)) _completedSectionCollapsed.Add(id);
+            }
+            catch (Exception e)
+            {
+                Logger.Warn(e, $"Restore: failed to parse collapsed sections ({raw}).");
+            }
+        }
+
+        private void WriteCollapsedCompleted()
+        {
+            if (_persistedCollapsedCompletedJson == null) return;
+            try
+            {
+                _persistedCollapsedCompletedJson.Value =
+                    JsonConvert.SerializeObject(_completedSectionCollapsed.ToList());
+            }
+            catch (Exception e) { Logger.Warn(e, "Failed to persist collapsed sections."); }
         }
 
         // Copy a chat link to the Windows clipboard via Blish's async clipboard helper, then

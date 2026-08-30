@@ -36,6 +36,10 @@ namespace GW2app
         // it in docs/protocol.md. v2 adds request-body fragmentation, which the
         // client uses only when it sees serverProtocol >= 2 (see AcceptFragment).
         private const int ProtocolVersion = 2;
+        // Sent to the website on `subscribe` and in the poll response. The Nexus module binds the
+        // same port and speaks the same protocol, so gw2.app/blish can end up talking to it and
+        // gw2.app/nexus to this one. This is how the website tells them apart.
+        private const string ModuleId = "blish";
         private const int HandshakeTimeoutMs = 5000;
 
         private const int CloseCodeSuperseded = 4000;
@@ -109,6 +113,9 @@ namespace GW2app
 
             var internalSettings = settings.AddSubCollection("internal");
             _persistedOpenListsJson = internalSettings.DefineSetting("openLists", "[]");
+            // Lists whose "Completed" section the user collapsed. Only collapsed ids are
+            // stored, so the default (expanded) writes nothing.
+            _persistedCollapsedCompletedJson = internalSettings.DefineSetting("collapsedCompleted", "[]");
             // Hidden setting: max waypoints per chat-link copy chunk. 1-15. At 15
             // (MaxWaypointsPerMessage) the chunker switches to character-count mode
             // (<= GW2ChatMaxLength = 199 per chunk). Mirrors the website.
@@ -183,6 +190,7 @@ namespace GW2app
             _iconTexture = ContentsManager.GetTexture("gw2app-icon.png");
             CreateCornerIcon();
             RebuildContextMenu();
+            RestoreCollapsedCompleted();
 
             // KeyBindings default to disabled; enable it. Activated fires on the update
             // thread, so the handler can touch UI directly.
@@ -795,11 +803,13 @@ namespace GW2app
         private readonly HashSet<string> _pendingEntries = new HashSet<string>();
 
         // List IDs whose "Completed" section is currently collapsed in GROUP_COMPLETED mode.
-        // Default = expanded (not in the set). Per-session only.
+        // Default = expanded (not in the set). Persisted, so a collapse survives closing the
+        // window and restarting.
         private readonly HashSet<string> _completedSectionCollapsed = new HashSet<string>();
         private bool _restoredFromPersistence;
         private bool _unloading;
         private SettingEntry<string> _persistedOpenListsJson;
+        private SettingEntry<string> _persistedCollapsedCompletedJson;
         private SettingEntry<int> _maxWaypointsPerCopy;
         // List ids currently in "copy waypoints" mode (panel shows slider + chunks).
         private readonly HashSet<string> _copyModeListIds = new HashSet<string>();

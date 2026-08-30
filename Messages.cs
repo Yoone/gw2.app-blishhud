@@ -92,6 +92,8 @@ namespace GW2app
     {
         [JsonProperty("type")] public string Type;
         [JsonProperty("listIds")] public List<string> ListIds;
+        // Which in-game module is answering. See GW2app.ModuleId.
+        [JsonProperty("module")] public string Module;
     }
 
     internal class SetEntryCompletedMessage

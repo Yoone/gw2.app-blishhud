@@ -546,7 +546,7 @@ namespace GW2app
 
         private async Task SendSubscribeAsync(List<string> listIds)
         {
-            var payload = new SubscribeMessage { Type = "subscribe", ListIds = listIds ?? new List<string>() };
+            var payload = new SubscribeMessage { Type = "subscribe", ListIds = listIds ?? new List<string>(), Module = ModuleId };
             if (await SendToClientAsync(JsonConvert.SerializeObject(payload)))
                 Logger.Info($"Sent subscribe with {listIds?.Count ?? 0} list ids.");
         }
@@ -805,6 +805,8 @@ namespace GW2app
             // post-v1 features (e.g. fragmentation). Absent to older clients that
             // ignore it, and absent from older modules so the client stays on v1.
             root["serverProtocol"] = ProtocolVersion;
+            // Also on `subscribe`, but a polling client sees this on its very first poll.
+            root["module"] = ModuleId;
             if (resync) { root["resync"] = true; }
             var bytes = Encoding.UTF8.GetBytes(root.ToString(Formatting.None));
             CloseResponse(ctx, 200, "application/json", bytes);

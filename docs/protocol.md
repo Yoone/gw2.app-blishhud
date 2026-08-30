@@ -1,13 +1,20 @@
 # Protocol
 
-Protocol between the GW2.app client (currently the website in a browser) and
-the Blish HUD module ("server"). The module listens on port `38473` and speaks
-the same JSON messages over two transports: a **WebSocket** (`ws://<host>:38473/`,
-the default) and an **HTTP polling** fallback (`POST /poll`, for environments
-where WebSockets don't work, notably GW2 under Wine on Linux). The message
-catalogue below is identical on both; only the framing and connection lifecycle
-differ (see HTTP polling transport below). Plain HTTP `GET /` responds with
-`426 Upgrade Required`.
+Protocol between the GW2.app client (currently the website in a browser) and an
+in-game module ("server"). Two modules implement it, each on its own port so
+both can run at the same time:
+
+| Module | Port | Client page |
+| --- | --- | --- |
+| Blish HUD | `38473` | `gw2.app/blish` |
+| Nexus | `38474` | `gw2.app/nexus` |
+
+A module speaks JSON messages over two transports: a **WebSocket**
+(`ws://<host>:<port>/`, the default) and an **HTTP polling** fallback
+(`POST /poll`, for environments where WebSockets don't work, notably GW2 under
+Wine on Linux). The message catalogue below is identical on both; only the
+framing and connection lifecycle differ (see HTTP polling transport below).
+Plain HTTP `GET /` responds with `426 Upgrade Required`.
 
 All messages are **JSON text frames**. Image bytes are base64-embedded
 (~33% overhead).
@@ -52,7 +59,7 @@ upgrade fails under Wine, though the plain HTTP listener works). It carries the
 exact same messages as the WebSocket transport, batched over request/response.
 A client picks one transport per connection.
 
-**Endpoint:** `POST http://<host>:38473/poll`, `Content-Type: application/json`.
+**Endpoint:** `POST http://<host>:<port>/poll`, `Content-Type: application/json`.
 The server checks `Origin` on every poll (same allow-list as the WebSocket
 handshake) and answers a disallowed origin with `403`; CORS alone would not stop
 the request's side effects from running.
@@ -69,8 +76,14 @@ connection.
 optional close.
 
 ```json
-{ "messages": [ ServerMessage, ... ], "close": null | { "code": 4000, "reason": "superseded" }, "resync": true }
+{ "messages": [ ServerMessage, ... ], "close": null | { "code": 4000, "reason": "superseded" }, "resync": true, "serverProtocol": 2, "module": "nexus" }
 ```
+
+`module` is **optional** and identifies which in-game module answered
+(`"blish"` or `"nexus"`). It is the same value the server sends on
+`subscribe`, repeated here because a polling client sees the response on its
+very first poll, before any `subscribe` has arrived. See the `subscribe`
+section for why the two modules are otherwise indistinguishable.
 
 `ClientMessage` and `ServerMessage` are exactly the objects from the Client →
 Server and Server → Client sections below. Either array may be empty. The
@@ -241,13 +254,38 @@ subscribed entry.
 #### `subscribe`: absolute set of list IDs the module wants imagery for
 
 ```json
-{ "type": "subscribe", "listIds": [ "...", "..." ] }
+{
+  "type": "subscribe",
+  "listIds": [ "...", "..." ],
+  "module": "nexus",
+  "render_width": 400
+}
 ```
 
 Sent once after the initial `state`, then any time the in-game subscription
 changes. Empty list = unsubscribe from everything. The server only ever
 sends IDs present in the latest `state`; unknown IDs are ignored by the
 client (with `console.error`).
+
+`module` and `render_width` are **optional**. A client must treat both as
+absent-by-default and keep working exactly as before when they are missing,
+since older builds of either module send neither.
+
+- **`module`** identifies which in-game module is answering: `"blish"` or
+  `"nexus"`. The ports above already separate them, so this confirms what the
+  client reached rather than discovering it, and it is the only thing in the
+  messages that does: `serverProtocol` is `2` for both. There is deliberately
+  no version field; if a capability ever needs gating, add a capability flag
+  rather than version-sniffing.
+- **`render_width`** is the width in device pixels that the module will blit
+  row images at. When present, the client should rasterise rows at exactly
+  this width so they display 1:1 with no resampling. When absent, the client
+  picks its own width as it always has, and the module scales to fit.
+
+Note the client sends `state` *before* the server sends `subscribe`, so over
+a WebSocket the client cannot know `module` when composing that first
+message. Browsers cannot read WebSocket handshake response headers either.
+Only the polling transport can learn it earlier, from the poll response.
 
 On a `subscribe` that adds new IDs, the client streams `entry` messages
 (with images) for every entry of each newly-subscribed list (list order,
